@@ -147,3 +147,30 @@ backend được cấu hình trong `.env`.
   `82f8056` (`feat: add context import script and README`).
 - Đã chạy lại export để đồng bộ thay đổi cuối cùng của plan; commit cập nhật
   plan là `dbf251e` (`chore: sync CRS context`).
+
+## 11. Cập nhật README sang tiếng Anh
+
+### Phạm vi
+
+- Chuyển toàn bộ nội dung `~/projects/sync-crs-context/README.md` sang tiếng
+  Anh.
+- Giữ nguyên cấu trúc và hướng dẫn kỹ thuật hiện tại: cấu hình `.env`, import
+  context về project, export context lên repository, thiết lập trên máy mới,
+  và các yêu cầu Bash/Git/rsync.
+- Không thay đổi hành vi của hai script hoặc nội dung các file context.
+
+### Verification
+
+- Đọc lại README để xác nhận không còn nội dung tiếng Việt trong tài liệu.
+- Kiểm tra các command, path, tên file và remote repository vẫn chính xác.
+- Commit và push chỉ file `README.md` cùng plan sync cập nhật; không commit
+  `.env`.
+
+### 11.1. Kết quả thực hiện
+
+- Đã chuyển toàn bộ `README.md` sang tiếng Anh, giữ nguyên các command, path,
+  tên file và hướng dẫn kỹ thuật.
+- `git diff --check` và kiểm tra ký tự không phát hiện lỗi.
+- Đã commit và push README với commit `b0dc7d6`
+  (`docs: translate README to English`).
+- `.env` tiếp tục được ignore và không được commit.

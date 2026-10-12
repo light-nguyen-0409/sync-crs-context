@@ -7,6 +7,7 @@
 > **Đối chiếu source gần nhất**: 2026-09-30 — working tree và test suite; chưa xác minh deployment/DB production.
 > **Cập nhật phạm vi GAP-691**: 2026-10-05 — bỏ legacy Agreement URL, chuyển ba Blade vào `views/pdf`, gộp agreement generation vào PermanentCandidateIntakeService; giữ mapping Hawk3/GPHL/Tech theo working tree, deployment chưa xác minh.
 > **Cập nhật date GAP-691**: 2026-10-06 — agreement DTO dùng ngày generate d/m/Y theo app timezone; full regression chưa pass vì unrelated mapping/asset/MM-debug user edits so với fixtures cũ.
+> **Cập nhật GAP-723**: 2026-10-12 — public referee employment-reference PUT requires a body token matching the path reference ID before update/notification; no token expiry, revocation, single-use state, or database schema change.
 > **Author**: Codex
 > **Mục đích**: Nguồn tham chiếu để AI, BA, QA và developer đọc hiểu flow nghiệp vụ hiện tại và kiểm tra logic khi code thay đổi.
 
@@ -329,12 +330,12 @@ SOURCE        : path/class/method chứng minh
 
 - **TRIGGER**: Candidate/consultant employment history CRUD; public referee token read/update.
 - **ACTOR**: Candidate, consultant hoặc referee.
-- **PRECONDITION**: Candidate auth hoặc referee token hợp lệ; email domain không bị block.
-- **STEPS**: Resolve history/reference → validate ownership/domain → create/update/delete → create reference request → referee submits response.
-- **RULES**: Referee `MUST NOT` truy cập ngoài token; history/reference phải gắn đúng candidate.
+- **PRECONDITION**: Candidate auth hoặc referee token hợp lệ; email domain không bị block. Public referee PUT phải nhận body token.
+- **STEPS**: Resolve history/reference → validate ownership/domain → create/update/delete → create reference request → referee GET bằng token → referee PUT bằng `id` và body token → compare token before write/notification.
+- **RULES**: Referee `MUST NOT` truy cập ngoài token; history/reference phải gắn đúng candidate. ID-only update, missing token và mismatched token `MUST` be rejected with the generic not-found/invalid-token behavior. Token không hết hạn/revoke/single-use trong implementation này.
 - **DB READ/WRITE**: `employment_histories`, `employment_history_references`, `candidates`, `files`.
 - **EXTERNAL**: MailSender; SharePoint nếu flow được bật.
-- **SIDE EFFECT**: Reference email, export PDF ở consultant flow.
+- **SIDE EFFECT**: Reference email, export PDF ở consultant flow; valid referee update notifies the branch and writes application audit log without raw token.
 - **POST-CONDITION**: Reference có trạng thái/audit để consultant review.
 - **SOURCE**: `MeEmployeeHistoryController.php`; `CandidateEmployeeHistoryController.php`; `RefereeEmploymentHistoryReferenceController.php`.
 

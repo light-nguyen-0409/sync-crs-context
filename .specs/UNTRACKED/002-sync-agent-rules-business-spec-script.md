@@ -1,6 +1,6 @@
 # SPEC: Script đồng bộ CRS Context vào Git riêng
 
-> **Trạng thái**: `DRAFT`
+> **Trạng thái**: `DONE`
 > **Ngày tạo**: 2026-10-07
 > **Author**: Codex
 
@@ -92,7 +92,15 @@ repository riêng `~/projects/sync-crs-context`, sau đó commit và push các t
 
 ## 8. Kết quả thực hiện
 
-Chưa triển khai. Chờ user duyệt plan trước khi tạo script.
+- Đã tạo executable script tại
+  `/Users/nexusfrontiertech/projects/sync-crs-context.sh`.
+- `bash -n` không phát hiện lỗi cú pháp.
+- Đã sync `AGENTS.md`, `.business-spec/`, `.specs/` và `.agents/` vào
+  `/Users/nexusfrontiertech/projects/sync-crs-context`.
+- Đã tạo commit `92911b2` với message `chore: sync CRS context`.
+- Đã push thành công commit lên remote `origin`, branch `main`.
+- Đã chạy lại script; script báo không có thay đổi và không tạo empty commit.
+- Script không dùng thao tác xóa hoặc `--delete`.
 
 ## 9. Phạm vi cập nhật theo yêu cầu mới
 

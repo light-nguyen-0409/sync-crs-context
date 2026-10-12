@@ -1,55 +1,55 @@
 # CRS Context Sync
 
-Repository này lưu các file context dùng chung của project CRS:
+This repository stores the shared context files for the CRS project:
 
 - `AGENTS.md`
 - `.agents/`
 - `.business-spec/`
 - `.specs/`
 
-## Cấu hình máy local
+## Local machine configuration
 
-Tạo file `.env` từ file mẫu:
+Create `.env` from the example file:
 
 ```bash
 cp .env.example .env
 ```
 
-Sau đó sửa `PROJECT_DIR` thành đường dẫn tuyệt đối tới project
-`gap-web-backend` trên máy hiện tại:
+Then set `PROJECT_DIR` to the absolute path of the `gap-web-backend` project on
+the current machine:
 
 ```dotenv
 PROJECT_DIR=/Users/nexusfrontiertech/projects/gap-web-backend
 ```
 
-File `.env` là cấu hình riêng của từng máy và không được commit.
+`.env` contains machine-specific configuration and must not be committed.
 
-## Đồng bộ từ repository về project
+## Sync from the repository to the project
 
-Chạy trong repository này:
+Run this from the repository:
 
 ```bash
 ./sync-to-project.sh
 ```
 
-Script sẽ copy `AGENTS.md`, `.agents/`, `.business-spec/` và `.specs/` về
-project được khai báo trong `PROJECT_DIR`. Script không xóa các file dư thừa ở
-project đích.
+The script copies `AGENTS.md`, `.agents/`, `.business-spec/`, and `.specs/` to
+the project configured in `PROJECT_DIR`. It does not delete extra files in the
+destination project.
 
-## Đồng bộ từ project lên repository
+## Sync from the project to the repository
 
-Sau khi chỉnh sửa context trong project backend, chạy script export ở thư mục
-`~/projects`:
+After editing the context files in the backend project, run the export script
+from `~/projects`:
 
 ```bash
 ~/projects/sync-crs-context.sh
 ```
 
-Script này sẽ copy các file context vào repository, tạo commit và push lên
-remote `origin` của branch hiện tại. Nếu không có thay đổi, script không tạo
-empty commit.
+The script copies the context files into this repository, creates a commit, and
+pushes it to the `origin` remote on the current branch. If there are no changes,
+it does not create an empty commit.
 
-## Thiết lập trên máy mới
+## Set up on a new machine
 
 ```bash
 cd ~/projects
@@ -58,10 +58,10 @@ cd sync-crs-context
 cp .env.example .env
 ```
 
-Sửa `PROJECT_DIR` trong `.env`, sau đó chạy:
+Set `PROJECT_DIR` in `.env`, then run:
 
 ```bash
 ./sync-to-project.sh
 ```
 
-Các script yêu cầu Bash, Git và `rsync`.
+The scripts require Bash, Git, and `rsync`.

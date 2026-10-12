@@ -109,3 +109,41 @@ repository riêng `~/projects/sync-crs-context`, sau đó commit và push các t
   hiện tại khi chạy.
 - Việc commit/push chỉ áp dụng cho repository `sync-crs-context`, không commit
   hoặc push repository backend `gap-web-backend`.
+
+## 10. Mở rộng: đồng bộ từ context repository về project
+
+Đã tạo thêm script import ngay trong repository
+`~/projects/sync-crs-context`, để copy context từ repository riêng về project
+backend được cấu hình trong `.env`.
+
+### 10.1. Files đã tạo
+
+| File | Mô tả |
+|------|-------|
+| `~/projects/sync-crs-context/sync-to-project.sh` | Copy `AGENTS.md`, `.business-spec/`, `.specs/` và `.agents/` về project đích |
+| `~/projects/sync-crs-context/.env` | Cấu hình local `PROJECT_DIR`; không commit |
+| `~/projects/sync-crs-context/.env.example` | Mẫu cấu hình được commit |
+| `~/projects/sync-crs-context/README.md` | Hướng dẫn clone, cấu hình `.env`, sync về project và sync ngược lên remote |
+| `~/projects/sync-crs-context/.gitignore` | Ignore `.env` và file local `.DS_Store` |
+
+### 10.2. Thiết kế script import
+
+- Xác định `SYNC_DIR` từ vị trí script, không phụ thuộc current working
+  directory.
+- Đọc biến bắt buộc `PROJECT_DIR` từ `SYNC_DIR/.env`.
+- Kiểm tra project đích tồn tại và không trỏ ngược vào sync repository.
+- Copy `AGENTS.md`, `.business-spec/`, `.specs/` và `.agents/` từ sync repo về
+  project đích bằng `rsync`.
+- Không dùng `--delete`, không xóa file khác ở project đích.
+- Không commit/push project backend; đây chỉ là thao tác import một chiều.
+
+### 10.3. Verification và kết quả
+
+- `bash -n` không phát hiện lỗi cú pháp ở cả hai script.
+- Đã chạy import thành công về project backend.
+- `.env` được tạo local với `PROJECT_DIR=/Users/nexusfrontiertech/projects/gap-web-backend`
+  và không được stage/commit.
+- Đã commit và push các file dùng chung lên `origin/main` với commit
+  `82f8056` (`feat: add context import script and README`).
+- Đã chạy lại export để đồng bộ thay đổi cuối cùng của plan; commit mới sẽ
+  được ghi nhận sau bước xác minh này.

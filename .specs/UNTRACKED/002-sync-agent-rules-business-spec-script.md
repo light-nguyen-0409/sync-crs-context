@@ -145,5 +145,5 @@ backend được cấu hình trong `.env`.
   và không được stage/commit.
 - Đã commit và push các file dùng chung lên `origin/main` với commit
   `82f8056` (`feat: add context import script and README`).
-- Đã chạy lại export để đồng bộ thay đổi cuối cùng của plan; commit mới sẽ
-  được ghi nhận sau bước xác minh này.
+- Đã chạy lại export để đồng bộ thay đổi cuối cùng của plan; commit cập nhật
+  plan là `dbf251e` (`chore: sync CRS context`).

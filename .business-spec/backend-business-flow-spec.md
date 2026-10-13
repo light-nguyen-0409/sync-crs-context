@@ -8,6 +8,7 @@
 > **Cập nhật phạm vi GAP-691**: 2026-10-05 — bỏ legacy Agreement URL, chuyển ba Blade vào `views/pdf`, gộp agreement generation vào PermanentCandidateIntakeService; giữ mapping Hawk3/GPHL/Tech theo working tree, deployment chưa xác minh.
 > **Cập nhật date GAP-691**: 2026-10-06 — agreement DTO dùng ngày generate d/m/Y theo app timezone; full regression chưa pass vì unrelated mapping/asset/MM-debug user edits so với fixtures cũ.
 > **Cập nhật GAP-723**: 2026-10-12 — public referee employment-reference PUT requires a body token matching the path reference ID before update/notification; no token expiry, revocation, single-use state, or database schema change.
+> **Cập nhật GAP-534**: 2026-10-12 — thêm bulk archive CRS và public profile-deletion token flow; implementation và test đã xác minh trên working tree, deployment/persistent DB chưa xác minh.
 > **Author**: Codex
 > **Mục đích**: Nguồn tham chiếu để AI, BA, QA và developer đọc hiểu flow nghiệp vụ hiện tại và kiểm tra logic khi code thay đổi.
 
@@ -378,7 +379,7 @@ SOURCE        : path/class/method chứng minh
 - **RULES**:
   - Candidate `MUST NOT` tự approve file.
   - File phải thuộc candidate/job context.
-  - Candidate status update trên `PUT /api/candidate/files/{id}/status` chỉ lookup và update khi `files.id`, authenticated `candidate_id` và exact middleware-resolved `job_id` cùng khớp; không fallback ngầm sang candidate-level `job_id = 0`.
+  - Candidate status update trên `PUT /api/candidate/files/{id}/status` chỉ lookup và update khi `files.id`, authenticated `candidate_id` và middleware-resolved job context cùng khớp; file candidate-level với `job_id = 0` được phép trong job context nếu vẫn thuộc đúng authenticated candidate.
   - Candidate self-service status update chỉ nhận `uploaded`, `released`, `read` hoặc `signed`; file ngoài scope trả not-found và không ghi DB.
   - RTW approved file phải có expiry khi loại file yêu cầu.
   - Delete phải xử lý storage và metadata.
@@ -968,3 +969,29 @@ GAP-691/010 (2026-10-09): `SyncPermanentCandidateToMatchMakerJob` accepts one ty
 GAP-691/012 (2026-10-09): The Service runtime DTO/context and direct `build → validate → handle` refactor were rolled back. Submit and MatchMaker Service methods use the prior request/scalar-ID flow. `SyncPermanentCandidateToMatchMakerJob` remains queued with `PermanentCandidateSyncData`; on each attempt it checks permanent state, asks Intake Service to generate/reuse the PDF, calls scalar MatchMaker sync with the queued IDs plus generated form ID, then completes the candidate. Queue lock, retry, PDF/MM ordering, and completion semantics remain unchanged; no API or schema change.
 
 GAP-691/015 (2026-10-09): Completion retry is now separated from the pre-sync terminal failure boundary without adding a submission-state table. The Job still exits for an already `is_permanent` candidate; otherwise it reads the existing Candidate MatchMaker marker (`match_maker_status=perm` plus `match_maker_people_number`). With no marker it generates/reuses the permanent PDF, performs the scalar MatchMaker sync, and calls completion in the same handle. If completion fails after the marker exists, the exception is allowed to reach the queue retry path; the next handle skips PDF/MM side effects and retries only `completePermanentCandidate`. Permanent intake submit applies the same marker guard and returns the existing conflict response while `is_permanent` is still false. Feature tests cover the real queued-job boundary and submit guard; full PHPUnit passes 614 tests / 9,303 assertions. No API contract, migration, or docs-repository change; external MatchMaker and production worker delivery remain unverified. See [plan015](../.specs/GAP-691/015-permanent-sync-completion-retry.md).
+## GAP-534 — Bulk archive and CRS profile deletion
+
+`POST /api/consultant/candidates/bulk_archive` is protected by staff JWT and
+consultant branch middleware. `BulkArchiveRequest` accepts 1–100 distinct
+candidate IDs and a required `send_email` boolean. The Service batch-loads
+candidate/job state for the selected branch, rejects permanent/approved/
+MatchMaker/ineligible candidates, and atomically soft-deletes eligible
+Candidates, archives eligible branch jobs, removes only the acting user's
+stars, and inserts one `candidate_archive_logs` receipt per newly archived
+candidate. A retry of a matching archived cycle is a no-op. When
+`send_email=true`, a 32-byte Base64URL token is hashed with SHA-256 and the
+encrypted `SendCandidateArchiveEmailJob` is dispatched only after commit;
+the job uses the existing `candidate_archive` email template and does not
+create a purge job.
+
+`GET` and `POST /api/candidate/profile_deletion` are public token-scoped
+routes outside candidate JWT/edit-lock middleware. The token is accepted only
+from `X-Profile-Deletion-Token`. GET performs no mutation and returns only
+`can_delete`; POST claims the latest unused seven-day archive token, removes
+CRS-owned storage synchronously, then purges CRS candidate data in a
+writes-only database transaction and returns only `deleted=true` after commit.
+Tracking histories, activity logs, candidate-owned relationships and SMS
+pre-campaign candidate IDs are removed/updated; archive receipts remain with
+`candidate_id=NULL`, and only the consumed receipt is marked `deleted`.
+MatchMaker/provider records, external tracking, sent mail and backups are out
+of scope. Storage deletion cannot be rolled back by the database transaction.

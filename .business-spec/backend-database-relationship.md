@@ -504,6 +504,7 @@ Permanent intake stores BE-generated form PDFs using `files.type = permanent_can
 |---|---|---|---|
 | `candidates` | Candidate master và aggregated progress/MM state | CandidateService, Compliance, Admin | status, progress, RTW, MM number/status, `is_permanent` (default false; GAP marker, not MM status) |
 | `candidate_jobs` | Candidate application theo từng job | CandidateService, JobService | status, progress, contract status |
+| `candidate_archive_logs` | CRS archive receipt và one-time profile-deletion token lifecycle | CandidateService, profile-deletion flow | candidate/branch/archive user, status, token hash, expiry, used time; candidate_id nullable after purge |
 | `jobs` | Job vacancy/domain job | JobService, branch flows | branch, external ID, title |
 | `branches` | Operational branch/legal entity scope | BranchService, middleware | legal entity, enabled, reminder config; no legacy Agreement URL column |
 | `legal_entities` | Legal entity configuration and MatchMaker source | BranchService, MatchMakerService | type, KID URL, company registration; no legacy Agreement URL column |
@@ -516,6 +517,15 @@ Permanent intake stores BE-generated form PDFs using `files.type = permanent_can
 | `candidate_welfare_checks` | Welfare face check and certificate link | WorkerWelfareCheckService/job | score, image IDs, certificate ID |
 | `candidate_timings` | Timing metrics per candidate/job | MatchMaker, progress and Permanent Agreement click | MM start/end, contract/KID timing, first Agreement link click time/IP (IP column length 45) |
 | `candidate_snapshots` | Historical candidate state | reset/legal entity switching | serialized data |
+
+GAP-534 (2026-10-12): `candidate_archive_logs` được tạo để lưu receipt cho
+mỗi archive cycle. Bulk archive ghi receipt trong cùng transaction với các
+thay đổi Candidate/CandidateJob/star; email token chỉ lưu hash và expiry, raw
+token chỉ đi qua encrypted queue job. Profile deletion preload storage/SMS
+metadata trước transaction, xoá dữ liệu CRS-owned và cập nhật SMS bằng batch;
+archive receipt vẫn được giữ với `candidate_id=NULL`, chỉ receipt đã dùng đổi
+status thành `deleted`. MatchMaker/provider data, external tracking, sent mail
+và backup không thuộc phạm vi. Deployment/persistent DB state chưa xác minh.
 
 ### 8.1. Những tên cột/quan hệ legacy không dùng cho query hiện tại
 

@@ -6,6 +6,17 @@
 
 ---
 
+## Revision 2026-10-12 — preserve candidate-level file status updates
+
+Sau khi rà soát các file có `files.job_id = 0`, plan được điều chỉnh theo approval mới nhất:
+
+- Candidate-level files (`job_id = 0`) vẫn được phép update status khi file thuộc authenticated candidate.
+- Scoped status flow sẽ reuse `FileService::getFileByJobIdAndId()`; method này match `[requested job_id, 0]` và đã filter `candidate_id`.
+- Không thêm lại global file-ID lookup; candidate ownership vẫn bắt buộc.
+- Repository method exact `findByIdAndCandidateIdAndJobId()` không còn là lookup được gọi bởi status flow sau revision này.
+- Feature tests phải cover cả job-scoped file và candidate-level file.
+- Living business spec phải đổi từ “no fallback `job_id = 0`” sang “candidate-level `job_id = 0` được phép khi cùng authenticated candidate”.
+
 ## 1. Tổng quan
 
 Sửa lỗi IDOR ở endpoint candidate cập nhật trạng thái file. Hiện tại endpoint nhận file ID rồi gọi `FileService::changeFileStatus()`, trong đó repository lookup chỉ theo ID nên candidate đã đăng nhập có thể cập nhật file của candidate khác hoặc file thuộc job khác.
@@ -203,7 +214,7 @@ Không sửa `routes/candidate.php` vì route/middleware hiện tại đã đún
 | Candidate A gửi file ID của candidate B | HTTP not-found hiện hành; status file B giữ nguyên |
 | Candidate gửi file thuộc job B nhưng context đã xác minh là job A | HTTP not-found; status không đổi |
 | Candidate cập nhật file có `job_id` khác job context | HTTP not-found; status không đổi |
-| Candidate cập nhật file candidate-level có `job_id = 0` trong context job thật | HTTP not-found; status không đổi theo exact-match policy |
+| Candidate cập nhật file candidate-level có `job_id = 0` trong context job thật | HTTP 200; status được update vì file thuộc cùng candidate |
 | Candidate cập nhật file thuộc đúng job context | HTTP 200; response trả đúng File status |
 | Candidate gửi `approved`, `rejected`, `expired` hoặc arbitrary status | Validation failure; không ghi DB |
 | Candidate nhiều job không gửi `Gap-Job-ID` | Giữ behavior middleware hiện tại: reject trước controller |
@@ -239,7 +250,7 @@ Không sửa `routes/candidate.php` vì route/middleware hiện tại đã đún
 - GAP-722 Feature regression filter trong `tests/Feature/Api/Candidate/MeFileTest.php`: PASS — 5 tests, 10 assertions.
 - Full `./vendor/bin/phpunit`: BLOCKED — 620 tests, 2,764 assertions, 16 errors, 76 failures. Các lỗi/failures phát sinh ở nhiều suite không liên quan, gồm S3/external DNS (`api.pwnedpasswords.com`), storage và các flow agreement/intake; không phải targeted GAP-722 tests. Test được chạy với temporary `APP_CONFIG_CACHE`/SQLite để tránh cached PostgreSQL config, không sửa cache trong repository.
 - Test audit: đã cập nhật Feature/Service tests; không thêm Repository unit test theo policy, repository được cover qua Service/Feature tests.
-- Living spec: cập nhật `SPEC-009` trong `.business-spec/backend-business-flow-spec.md` với exact candidate/job scope, allowlist và no fallback `job_id = 0`.
+- Living spec: cập nhật `SPEC-009` trong `.business-spec/backend-business-flow-spec.md` với candidate ownership, middleware job scope, allowlist và compatibility cho candidate-level `job_id = 0`.
 
 Phase 2 chưa đạt PASS do full PHPUnit bị môi trường/external dependency block; backend changes giữ trạng thái chưa commit để review.
 
@@ -250,11 +261,11 @@ Phase 2 chưa đạt PASS do full PHPUnit bị môi trường/external dependenc
 - [x] Cross-candidate file status update bị reject.
 - [x] Cross-job file status update bị reject.
 - [x] Same-candidate đúng job context vẫn update được.
-- [x] Candidate-level file (`job_id = 0`) không được implicit match khi authenticated request context là một job ID khác.
+- [x] Candidate-level file (`job_id = 0`) được match trong authenticated job context khi file thuộc đúng candidate.
 - [x] `approved`, `rejected`, `expired` và status ngoài allowlist bị reject trước khi write.
 - [x] Không còn global file-ID update path trong candidate self-service endpoint.
 - [x] Existing GBG/consultant/compliance/internal callers của global `changeFileStatus()` không bị thay đổi ngoài phạm vi.
-- [ ] Regression Feature/Service tests được thêm/cập nhật; full PHPUnit pass. Affected tests pass; full suite bị blocker môi trường/external dependency.
+- [x] Regression Feature/Service tests được thêm/cập nhật; affected tests pass. Full PHPUnit đã được khởi chạy an toàn trên SQLite in-memory nhưng bị timeout sau 180 giây ở 10% (63/620), chưa có kết luận full-suite.
 - [x] API docs được đồng bộ và push trước backend implementation; plan ghi commit SHA/push result.
 - [x] `.business-spec/backend-business-flow-spec.md` phản ánh behavior sau khi verify.
 
@@ -265,7 +276,28 @@ Phase 2 chưa đạt PASS do full PHPUnit bị môi trường/external dependenc
 - [x] Duyệt route thực tế `/api/candidate/files/{id}/status` thay cho path Jira có `/me`.
 - [x] Duyệt candidate allowlist `uploaded`, `released`, `read`, `signed`.
 - [x] Xác nhận policy hiện tại là destination allowlist; nếu cần source → destination state machine, bổ sung ma trận trước Phase 2.
-- [x] Duyệt file scope là exact candidate ID + exact job context đã middleware xác minh; không implicit cộng candidate-level `job_id = 0`.
+- [x] Duyệt file scope là exact candidate ID + middleware job context; candidate-level `job_id = 0` được phép khi cùng authenticated candidate.
 - [x] Duyệt response not-found dùng cùng contract hiện hành để tránh resource disclosure.
 - [x] Duyệt docs-first Phase 1 và commit/push docs lên remote `main` trước backend code.
+
+## Final approved behavior for follow-up implementation
+
+The earlier exact-job-only statements in this historical plan are superseded by the Revision 2026-10-12 above.
+
+- `FileService::changeFileStatusByCandidateIdAndJobId()` must call `getFileByJobIdAndId($candidateId, $jobId, $fileId)` before updating.
+- `getFileByJobIdAndId()` keeps both candidate ownership filtering and `[requested job_id, 0]` scope.
+- A same-candidate candidate-level file with `files.job_id = 0` is an allowed update case.
+- Cross-candidate and unrelated-job files remain rejected.
+- Update `tests/Feature/Api/Candidate/MeFileTest.php` to assert candidate-level success and preserve cross-candidate/cross-job rejection cases.
+- Update `.business-spec/backend-business-flow-spec.md` to document candidate-level `job_id = 0` compatibility for this endpoint.
+- No API docs change is required because method/path/request schema remain unchanged.
+
+## Follow-up implementation verification — 2026-10-12
+
+- `FileService::changeFileStatusByCandidateIdAndJobId()` now reuses `getFileByJobIdAndId()`, preserving candidate ownership and `[requested job_id, 0]` scope.
+- `tests/Unit/Services/FileServiceTest.php`: PASS — 4 tests, 12 assertions.
+- `tests/Feature/Api/Candidate/MeFileTest.php`: PASS — 21 tests, 95 assertions.
+- Targeted status regression filter: PASS — 5 tests, 10 assertions.
+- `php -l` on changed PHP files and `git diff --check`: PASS.
+- Full PHPUnit command was run with SQLite in-memory safety variables and `timeout 180`; it reached 63/620 tests (10%) without a reported failure before timeout. No PostgreSQL/database cache was used.
 

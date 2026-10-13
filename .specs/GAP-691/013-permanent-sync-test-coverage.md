@@ -43,3 +43,56 @@ The stale tests for removed runtime-context methods and forced queue routing wer
 ## API/docs assessment
 
 Không đổi route, request/response/error contract hoặc schema; `~/projects/crs-api-docs` là **N/A — no API contract/API docs change**. Plan này chỉ bổ sung kiểm thử backend.
+
+## Amendment — align tests with default cache lock store (2026-10-12)
+
+> **Trạng thái amendment**: `IMPLEMENTED`
+
+### Mục tiêu
+
+Điều chỉnh test theo thay đổi hiện tại của `SyncPermanentCandidateToMatchMakerJob`: lock dùng `Cache::lock(...)` trên cache store mặc định thay vì gọi rõ `Cache::store('redis')->lock(...)`. Không thay đổi production code trong amendment này.
+
+### Phạm vi file sau khi được duyệt
+
+- `tests/Feature/Api/Candidate/PermanentCandidateFormTest.php`
+  - Cấu hình `cache.default` cho test thay vì chỉ cấu hình named Redis store.
+  - Đổi lock tạo trước và assertion lock sau khi worker chạy sang `Cache::lock(...)`.
+  - Giữ nguyên mục tiêu kiểm thử lock contention: worker không xử lý khi lock đang bị giữ và lock được release đúng cách.
+- `tests/Feature/Api/Candidate/PermanentCandidateIntakeTest.php`
+  - Đổi setup cache store của test sang `cache.default` để khớp runtime path của Job.
+
+### Call-chain/data-origin verification
+
+`PermanentCandidateIntakeService` dispatch `SyncPermanentCandidateToMatchMakerJob`; `SyncPermanentCandidateToMatchMakerJob::handle()` tạo lock bằng default cache manager với key từ `LOCK_KEY_PREFIX` và candidate ID. Test phải cấu hình đúng default store và dùng cùng key contract, không giả định named Redis store còn được sử dụng.
+
+### API/docs và dữ liệu
+
+- Không đổi route, request/response/error contract hoặc schema.
+- `~/projects/crs-api-docs`: **N/A — no API contract/API docs change**.
+- Không migration, seed, hoặc thay đổi dữ liệu production.
+
+### Verification gate
+
+- Chạy test lock contention và các affected Feature/Service/Job suites.
+- Do môi trường hiện tại đang nạp cấu hình PostgreSQL thay vì SQLite in-memory, test cần chạy với config-cache override đã được ghi nhận trong plan GAP-691/008, ví dụ `APP_CONFIG_CACHE=/private/tmp/gap691-no-config-cache.php`, không sửa config cache trong repository.
+- Sau đó chạy `./vendor/bin/phpunit` và ghi nhận kết quả thực tế; nếu còn blocker môi trường thì báo rõ, không coi là PASS.
+- Chạy PHP lint và `git diff --check`, không chạy formatter/linters tự động ngoài các kiểm tra được yêu cầu.
+
+### Acceptance criteria
+
+- Không còn test trực tiếp phụ thuộc `Cache::store('redis')->lock(...)` cho flow này.
+- Existing lock-contention regression test pass và vẫn chứng minh không xử lý trùng candidate.
+- Affected suites và full PHPUnit pass, hoặc blocker môi trường được ghi nhận chính xác.
+- Diff chỉ gồm các test setup/assertion liên quan đến default cache lock; không ảnh hưởng các thay đổi người dùng đang có.
+
+### Verification result
+
+- Updated `PermanentCandidateFormTest` và `PermanentCandidateIntakeTest` để dùng `cache.default`/`Cache::lock(...)`.
+- Lock-contention regression test: **PASS — 1 test, 11 assertions**.
+- Related completion-retry test: **PASS — 1 test, 11 assertions**.
+- Affected Feature suites: **PASS — 22 tests, 218 assertions**.
+- Full PHPUnit: **PASS — 613 tests, 9,289 assertions**.
+- PHP lint trên hai test file: **PASS**.
+- `git diff --check`: **PASS**.
+- Không còn reference `LOCK_STORE`, `cache.stores.redis`, hoặc `Cache::store('redis')` trong `app/` và `tests/`.
+- Test commands dùng process-only `APP_CONFIG_CACHE=/private/tmp/gap691-no-config-cache.php` để bỏ qua config cache PostgreSQL cũ; không thay đổi config cache trong repository.

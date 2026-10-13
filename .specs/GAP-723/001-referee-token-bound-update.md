@@ -1,6 +1,6 @@
 # SPEC: GAP-723 — Require referee token for employment reference updates
 
-> **Trạng thái**: `DRAFT`
+> **Trạng thái**: `IMPLEMENTED — TEST VERIFICATION BLOCKED BY ENVIRONMENT`
 > **Ngày tạo**: 2026-10-12
 > **Ngày cập nhật**: 2026-10-12
 > **Author**: Codex
@@ -262,13 +262,14 @@ Không giả định referee login, candidate auth hoặc token tồn tại tron
 | `app/Services/CandidateService.php` | Load by ID, token validation/update, application audit và notification orchestration |
 | `app/Http/Requests/Api/Candidate/EmploymentHistoryReferenceUpdate.php` | Add token to whitelist and validation rules |
 | `app/Http/Controllers/Api/Candidate/RefereeEmploymentHistoryReferenceController.php` | Pass validated token; remove ID-only authorization path; preserve response contract |
-| `app/Models/ActivityLog.php` / related audit layer | Add referee feedback audit type only if existing activity log is approved for this audit |
 | `routes/candidate.php` | Giữ public routes và middleware `api` mặc định; không thêm authentication hoặc route-specific throttle |
 | `tests/Feature/Api/Candidate/RefereeEmploymentHistoryReferenceTest.php` | Token binding, rate-limit and notification side-effect tests |
 | `tests/Unit/Services/CandidateServiceTest.php` or existing Service test location | Service token-scope/business-rule tests; no Repository-only unit test |
 | `.business-spec/backend-business-flow-spec.md` | Update SPEC-006 after verified implementation |
 | `.business-spec/backend-api-route-inventory.md` | Record token-required PUT behavior/rate limit if route inventory contract changes |
 | `.business-spec/backend-database-relationship.md` | Record no-schema-change token relationship only if living spec needs clarification |
+
+**Phase 2 implementation result (2026-10-12):** Updated `CandidateServiceInterface`, `EmploymentHistoryReferenceUpdate`, `RefereeEmploymentHistoryReferenceController`, `CandidateService`, and `RefereeEmploymentHistoryReferenceTest`. No migration, model, repository, route, or database-schema file was changed. Security audit uses application `Log` with reference/candidate IDs and outcome only; raw token is never logged and no audit row is written to the database. Living specs were updated in `backend-business-flow-spec.md` and `backend-api-route-inventory.md`; database relationship spec required no change.
 
 ---
 
@@ -314,6 +315,8 @@ Không giả định referee login, candidate auth hoặc token tồn tại tron
 - Living business specs are updated with actual verified behavior.
 - Self-check confirms no public ID-only update path remains.
 
+**Phase 2 verification result (2026-10-12):** PHP syntax checks, `git diff --check`, and the existing `CandidateServiceTest` smoke test (`1 test, 1 assertion`) passed. The targeted Feature suite and full PHPUnit run could not complete successfully because the project test bootstrap seeds CSV rows with fixed IDs without resetting PostgreSQL sequences; factory setup then fails at `legal_entities.id=1` before GAP-723 assertions run. The host run additionally cannot resolve Docker-only `pgsql`. No GAP-723 assertion failure was reached.
+
 **Deployment gate**:
 
 - Backend API contract is deployed after the docs phase and is ready for API consumers to send the required token.
@@ -324,18 +327,18 @@ Không giả định referee login, candidate auth hoặc token tồn tại tron
 
 ## 9. Acceptance Criteria
 
-- [ ] PUT requests without token are rejected.
-- [ ] Token for Reference A cannot update Reference B.
+- [x] PUT requests without token are rejected by FormRequest validation.
+- [x] Token for Reference A cannot update Reference B.
 - [x] Missing, malformed and mismatched tokens are rejected.
-- [ ] Valid referee update continues to work for API consumers sending the token contract.
-- [ ] Backend never updates by numeric ID alone.
-- [ ] Invalid requests do not trigger branch notification or success audit.
-- [ ] Valid update triggers the expected branch notification and application audit log without raw token.
+- [x] Valid referee update continues to work for API consumers sending the token contract (implementation verified by call-chain/static review; runtime test blocked).
+- [x] Backend never updates by numeric ID alone.
+- [x] Invalid requests do not trigger branch notification or success audit.
+- [x] Valid update triggers the expected branch notification and application audit log without raw token.
 - [x] Public referee GET/PUT dùng middleware API throttle mặc định `120/min` theo IP; không thêm limiter riêng.
 - [x] API docs are synchronized and pushed before implementation code.
 - [x] Không thay đổi DB; token lifecycle/expiry/replay được ghi nhận là out of scope.
-- [ ] Affected backend tests pass; full backend suite results are recorded.
-- [ ] Living business specs reflect the implemented token-bound workflow.
+- [ ] Affected backend tests pass; full backend suite results are recorded. **Blocked by test environment sequence/seed issue; see Phase 2 verification result.**
+- [x] Living business specs reflect the implemented token-bound workflow.
 
 ---
 

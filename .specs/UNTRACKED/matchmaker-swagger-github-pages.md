@@ -189,3 +189,204 @@ Không sửa source code CRS trong task này.
 Chưa tạo folder/repository mới, chưa tạo file implementation và chưa push
 remote cho đến khi plan này được user duyệt và cung cấp GitHub repository đích
 hoặc xác nhận owner/name/visibility để tạo repository mới.
+
+---
+
+# Addendum: Postman collection theo category
+
+## 10. Mục tiêu bổ sung
+
+Tạo một Postman collection có thể import vào Postman, bao gồm toàn bộ các
+operation được khai báo trong `openapi.yaml` của repository
+`~/projects/matchmaker-api-contract`, và chia request thành folder theo
+category/tag của contract.
+
+Phạm vi mặc định là CRS integration inventory hiện có trong `openapi.yaml`
+(Epsilon và Bespoke/non-Epsilon). File snapshot chính thức
+`epsilon-openapi.json` không được tự động trộn vào collection này vì nó là
+catalog chính thức lớn hơn contract runtime của CRS; nếu cần toàn bộ catalog
+chính thức, đó là một collection riêng cần được duyệt thêm.
+
+## 11. Thiết kế collection
+
+- Tên collection dự kiến: `MatchMaker API - CRS Integration`.
+- Tạo folder theo tag/category hiện có: Authentication, Epsilon, Health,
+  Candidate read, Candidate registration, Candidate update, Compliance and
+  files, Reserved và Bespoke/non-Epsilon khi operation có tag tương ứng.
+- Giữ method, path, query/path parameters, request body, response examples và
+  security scheme từ `openapi.yaml`; không tự thêm endpoint ngoài contract.
+- Dùng biến Postman, không ghi credential thật vào file:
+  - `{{epsilon_base_url}}`
+  - `{{epsilon_username}}` và `{{epsilon_password}}` dạng secret
+  - `{{master_user_auth}}`, `{{client_user_auth}}`, `{{candidate_user_auth}}`
+    dạng secret khi endpoint cần.
+- Epsilon request dùng Basic Auth và các custom auth headers conditional theo
+  contract. Bespoke request chỉ dùng Basic Auth riêng của Bespoke.
+- Thêm mô tả ở collection/folder để ghi rõ Postman không đại diện cho browser
+  call trực tiếp; Epsilon CORS và credential exposure vẫn phải được xử lý qua
+  backend proxy.
+- Ưu tiên Postman filesystem-first/git-native v3; nếu người dùng cần file
+  import trực tiếp vào Postman UI, tạo thêm artifact import tương thích sau khi
+  xác nhận CLI hỗ trợ export/convert, nhưng không lưu secret thật.
+
+## 12. Files dự kiến
+
+| File | Mục đích |
+|---|---|
+| `postman/collections/matchmaker-api-crs-integration/.resources/definition.yaml` | Metadata, collection variables và auth mặc định |
+| `postman/collections/matchmaker-api-crs-integration/<category>/*.request.yaml` | Một file cho mỗi request theo schema v3 |
+| `postman/environments/matchmaker-api.environment.yaml` | Base URL và placeholder/secret variables, không có giá trị credential thật |
+| `README.md` | Hướng dẫn import/sync, set secret variables và giới hạn CORS |
+
+Nếu Postman CLI yêu cầu một file import v2.1 riêng, file đó sẽ được tạo ở
+đường dẫn được CLI hỗ trợ và được kiểm tra không chứa secret; không sửa
+`openapi.yaml` chỉ để phục vụ format import.
+
+## 13. Validation và acceptance criteria
+
+- Số operation trong collection khớp số operation nguồn trong `openapi.yaml`.
+- Không có duplicate method + path trong cùng category ngoài trường hợp
+  contract nguồn cố ý khai báo khác operation.
+- Folder/category không chứa request ngoài scope hoặc thiếu request nguồn.
+- Collection/environment lint pass bằng Postman CLI hoặc validator tương ứng.
+- Import vào Postman thành công và hiển thị đúng folder hierarchy.
+- Không có Basic password, access token, private environment value hoặc secret
+  thật trong git diff.
+- Không chạy request thật tới Epsilon trong bước generate/validation; chỉ chạy
+  integration test sau khi user cung cấp target và explicit approval.
+
+## 14. API contract/docs impact gate
+
+Task này không thay đổi endpoint, request/response schema hoặc error contract;
+collection là artifact dẫn xuất từ contract hiện tại. Ghi nhận
+`~/projects/crs-api-docs`: **N/A — no API contract/API docs change**, trừ khi
+trong lúc triển khai phát hiện phải sửa contract nguồn. Nếu contract nguồn bị
+thay đổi, phải dừng collection generation, cập nhật docs-first theo
+`AGENTS.md`, rồi regenerate collection.
+
+## 15. Execution gate
+
+Chưa tạo `postman/` files, chưa sửa `openapi.yaml`, chưa import/push collection
+lên Postman Cloud và chưa gọi Epsilon cho đến khi user explicitly approve
+addendum này. Sau approval mới kiểm tra Postman CLI, generate collection,
+validate, review diff và bàn giao file import/folder structure.
+
+## 16. Addendum implementation result
+
+**Status**: PASS — generated and validated locally; Postman Cloud push chưa thực hiện.
+
+### Files đã tạo/cập nhật trong `~/projects/matchmaker-api-contract`
+
+- `postman/MatchMaker API - CRS Integration.postman_collection.json` — file
+  Postman Collection v2.1 để import trực tiếp.
+- `postman/MatchMaker API.postman_environment.json` — environment v2.1 để
+  import trực tiếp trong Postman UI và resolve host variables.
+- `postman/collections/matchmaker-api-crs-integration/.resources/definition.yaml`
+  — metadata collection v3.
+- `postman/collections/matchmaker-api-crs-integration/` — 41 request v3, chia
+  theo adapter (`Epsilon`, `Bespoke - non-Epsilon`) và category/tag.
+- `postman/environments/matchmaker-api.environment.yaml` — environment
+  template, secret variables để trống/disabled.
+- `README.md` — hướng dẫn import và cảnh báo credential/CORS.
+
+### Validation evidence
+
+- `openapi.yaml` operations: 41.
+- Generated v3 request files: 41.
+- v2.1 import items: 41.
+- `postman collection lint ... --fail-severity warning --reporter json`:
+  PASS — 41 files scanned, 0 errors, 0 warnings.
+- `postman environment lint ... --fail-severity warning --output json`:
+  PASS — 1 file scanned, 0 errors, 0 warnings.
+- Environment JSON import audit: PASS — 31 variables, gồm
+  `epsilon_base_url` và `bespoke_base_url`; không có secret thật.
+- Postman UI rendering fix: file v2.1 request URLs now include `raw`, `host`,
+  `path` và `query`; `postman collection migrate` PASS sau khi regenerate.
+- `postman collection migrate` trên file v2.1 vào thư mục tạm: PASS.
+- Placeholder audit: PASS — không có credential/token thật; mọi placeholder
+  đều có trong environment template.
+- Contract source diff: `openapi.yaml`, `openapi-bundle.json` và
+  `epsilon-openapi.json` không bị sửa.
+- API contract/docs gate: **N/A — no API contract/API docs change**; collection
+  chỉ là artifact dẫn xuất. Không cập nhật hoặc commit/push `~/projects/crs-api-docs`.
+- Không gọi request thật tới Epsilon và không push lên Postman Cloud.
+
+## 17. Addendum: tự động tạo `master_user_auth`
+
+### Mục tiêu
+
+Sau khi chạy `GET /api/Accounts/GetAccessToken`, Postman phải tự động đọc
+`usr_token` từ response, đọc `peo_no` từ environment và set environment
+variable:
+
+```text
+master_user_auth = base64(peo_no:usr_token)
+```
+
+Các request Epsilon đang dùng `{{master_user_auth}}`, nên những request tiếp
+theo có thể dùng token vừa nhận mà không cần copy thủ công.
+
+### Thiết kế
+
+- Thêm `afterResponse` script vào request `getAccessToken` trong collection v3.
+- Thêm script tương đương dạng `test` event vào file Collection v2.1 để Postman
+  UI import trực tiếp giữ nguyên behavior.
+- Đọc `peo_no` bằng `pm.environment.get('peo_no')`.
+- Parse JSON response và đọc `usr_token`.
+- Encode bằng Base64 và ghi bằng
+  `pm.environment.set('master_user_auth', encodedValue)`.
+- Không log token hoặc giá trị `master_user_auth` ra Postman Console.
+- Nếu response không hợp lệ hoặc thiếu `peo_no`/`usr_token`, tạo test failure
+  rõ ràng và không ghi giá trị rỗng vào environment.
+
+### Variable mapping dùng chung
+
+Request không được hardcode hoặc yêu cầu nhập lại các giá trị dùng chung. Quy
+ước variable:
+
+| Variable | Scope chính | Secret | Dùng cho |
+|---|---|---:|---|
+| `epsilon_base_url` | Collection fallback + Environment override | Không | Tất cả request Epsilon |
+| `bespoke_base_url` | Collection fallback + Environment override | Không | Tất cả request Bespoke/non-Epsilon |
+| `epsilon_username` | Environment | Có | Basic Auth của Epsilon |
+| `epsilon_password` | Environment | Có | Basic Auth của Epsilon |
+| `bespoke_username` | Environment | Có | Basic Auth của Bespoke |
+| `bespoke_password` | Environment | Có | Basic Auth của Bespoke |
+| `peo_no` | Environment | Không | Candidate context và script tạo master auth |
+| `master_user_auth` | Environment | Có | Header Epsilon sau khi lấy token |
+
+Các request chỉ tham chiếu `{{epsilon_base_url}}`,
+`{{bespoke_base_url}}`, `{{epsilon_username}}`, `{{epsilon_password}}`,
+`{{bespoke_username}}`, `{{bespoke_password}}` và `{{master_user_auth}}`;
+không tạo bản copy credential riêng ở từng request. Environment override được
+ưu tiên để người dùng đổi target/credential theo môi trường mà không phải sửa
+collection.
+
+### Validation gate
+
+- Static audit xác nhận script chỉ nằm trên `getAccessToken`.
+- Static audit xác nhận dùng đúng response key `usr_token`, environment key
+  `peo_no` và output key `master_user_auth`.
+- Static audit xác nhận URL/auth của mọi request dùng shared variables, không có
+  credential hoặc host hardcode trong từng request.
+- Postman collection/environment lint pass.
+- Không gọi Epsilon thật trong validation; manual run chỉ thực hiện khi user
+  đã set credential và target environment.
+
+### Implementation result
+
+**Status**: PASS.
+
+- v3 script cập nhật tại
+  `postman/collections/matchmaker-api-crs-integration/Epsilon/Authentication/getAccessToken.request.yaml`.
+- v2.1 `test` event cập nhật trong
+  `postman/MatchMaker API - CRS Integration.postman_collection.json`.
+- README đã ghi rõ thứ tự chạy `GetAccessToken` trước các request Epsilon khác.
+- Static audit: đúng 1 request có script; request này dùng `peo_no`, `usr_token`,
+  `btoa` và set `master_user_auth`; không có token logging.
+- Shared auth audit: 41/41 request dùng các variable credential chung; không có
+  username/password hardcode trong request.
+- Collection lint: PASS — 41 files scanned, 0 errors, 0 warnings.
+- Environment lint: PASS — 1 file scanned, 0 errors, 0 warnings.
+- v2.1 `postman collection migrate`: PASS.
+- Không gọi Epsilon thật và không push lên Postman Cloud.

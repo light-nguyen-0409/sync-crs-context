@@ -462,6 +462,11 @@ erDiagram
         bigint candidate_id FK
         string type
     }
+    SHORT_LINKS {
+        bigint id PK
+        string token_hash UK
+        text destination_url encrypted
+    }
 ```
 
 ## 7. Audit và external integration storage
@@ -504,7 +509,7 @@ Permanent intake stores BE-generated form PDFs using `files.type = permanent_can
 |---|---|---|---|
 | `candidates` | Candidate master và aggregated progress/MM state | CandidateService, Compliance, Admin | status, progress, RTW, MM number/status, `is_permanent` (default false; GAP marker, not MM status) |
 | `candidate_jobs` | Candidate application theo từng job | CandidateService, JobService | status, progress, contract status |
-| `candidate_archive_logs` | CRS archive receipt và one-time profile-deletion token lifecycle | CandidateService, profile-deletion flow | candidate/branch/archive user, status, token hash, expiry, used time; candidate_id nullable after purge |
+| `match_maker_duplication_processes` | Local CRS duplicate-verification state owned by candidate | MatchMakerDuplicationService, candidate profile-deletion purge | unique candidate_id, token, verification/confirmation flags |
 | `jobs` | Job vacancy/domain job | JobService, branch flows | branch, external ID, title |
 | `branches` | Operational branch/legal entity scope | BranchService, middleware | legal entity, enabled, reminder config; no legacy Agreement URL column |
 | `legal_entities` | Legal entity configuration and MatchMaker source | BranchService, MatchMakerService | type, KID URL, company registration; no legacy Agreement URL column |
@@ -517,15 +522,27 @@ Permanent intake stores BE-generated form PDFs using `files.type = permanent_can
 | `candidate_welfare_checks` | Welfare face check and certificate link | WorkerWelfareCheckService/job | score, image IDs, certificate ID |
 | `candidate_timings` | Timing metrics per candidate/job | MatchMaker, progress and Permanent Agreement click | MM start/end, contract/KID timing, first Agreement link click time/IP (IP column length 45) |
 | `candidate_snapshots` | Historical candidate state | reset/legal entity switching | serialized data |
+| `short_links` | First-party redirect mapping for rich-text email URLs | ShortLinkService and public redirect route | unique token hash, encrypted destination URL; no business FK |
 
-GAP-534 (2026-10-12): `candidate_archive_logs` được tạo để lưu receipt cho
-mỗi archive cycle. Bulk archive ghi receipt trong cùng transaction với các
-thay đổi Candidate/CandidateJob/star; email token chỉ lưu hash và expiry, raw
-token chỉ đi qua encrypted queue job. Profile deletion preload storage/SMS
-metadata trước transaction, xoá dữ liệu CRS-owned và cập nhật SMS bằng batch;
-archive receipt vẫn được giữ với `candidate_id=NULL`, chỉ receipt đã dùng đổi
-status thành `deleted`. MatchMaker/provider data, external tracking, sent mail
-và backup không thuộc phạm vi. Deployment/persistent DB state chưa xác minh.
+GAP-534 (2026-10-19): Không có candidate_archive_logs table hoặc archive
+receipt/token state. Bulk archive cập nhật eligible candidate_jobs theo
+selected branch và acting-user stars trong transaction, reset contract
+document/progress và xoá contract/medical files; Candidate vẫn active, không
+update deleted_at. Email link dùng candidate ID và
+StringUtility::uniqueHash(id). Profile deletion preload file paths/SMS
+metadata, gọi lại CandidateService::deleteCandidate, xoá dữ liệu CRS-owned và
+cập nhật SMS bằng batch; local match_maker_duplication_processes cũng được
+xoá theo candidate trong transaction. CandidatePurgeRepository và
+CandidateRepository::purgeCandidateData không còn được dùng; CandidateService
+điều phối các repository owner theo từng bảng để thực hiện cleanup trong
+transaction.
+Storage paths chỉ bị xoá sau DB commit và storage failure để lại orphan object
+có thể cleanup/retry. MatchMaker/provider data, external tracking, sent mail và
+backup không thuộc phạm vi.
+Deployment/persistent DB state chưa xác minh.
+
+GAP-534 (2026-10-12) archive-log/random-token design is historical and
+superseded; it must not be used as the current database relationship baseline.
 
 ### 8.1. Những tên cột/quan hệ legacy không dùng cho query hiện tại
 

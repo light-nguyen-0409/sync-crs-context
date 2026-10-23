@@ -17,6 +17,7 @@
 - **Repository Layer (Pure Data Access)**:
   - Repository ONLY accesses the database (queries, joins, filters, inserts, updates, deletes).
   - NEVER place business logic, conditional business branching rules, or `config()` checks inside Repositories.
+  - All Repository interface-to-implementation bindings MUST be registered in `App\Providers\RepositoryServiceProvider`; DO NOT register Repository bindings in `AppServiceProvider`.
   - **Return Type Hint for Single Record Queries (`find` / `first`)**:
     - Tất cả các method tìm kiếm/truy vấn đơn bản ghi (như `find`, `first`, `firstByFilter`, `getLatestBy...`) trong Repository Contract và Repository Implementation PHẢI có return type hint là `?\Illuminate\Database\Eloquent\Model` (hoặc `?Model`), KHÔNG khai báo custom model trực tiếp (ví dụ: `?CandidateWelfareCheck`).
 - **Named Query Methods for Stable Conditions**:
@@ -48,6 +49,11 @@
   - DO NOT copy-paste the same business logic across multiple methods or files.
   - When logic is repeated in two or more places, extract it into a shared helper or service with an appropriate scope; internal helpers MUST be `private`.
   - Only abstract logic that has the same business behavior; do not combine code that is merely structurally similar.
+- **Exception Logging & Observability (STRICT - Always Include Exception Message)**:
+  - Khi bọc `try ... catch (\Throwable $e)` để log lỗi hoặc xử lý fallback trong Services, Jobs, Commands, hoặc Controllers:
+  - **TUYỆT ĐỐI KHÔNG CHỈ LOG MỖI TÊN CLASS NGOẠI LỆ** (ví dụ: `'exception' => $e::class` mà bỏ qua message). Việc chỉ log class name gây mù thông tin và khiến việc truy vết root cause khi debug trên môi trường Staging/Production trở nên bất khả thi.
+  - **BẮT BUỘC PHẢI LOG KÈM THÔNG ĐIỆP LỖI** (`'message' => $e->getMessage()`) cùng các context liên quan (như ID, trạng thái, bước thực thi).
+  - Nếu ngoại lệ có nguy cơ chứa dữ liệu nhạy cảm/PII/secret tokens (như trong query parameters hoặc connection string), hãy sanitize hoặc mask phần nhạy cảm; KHÔNG ĐƯỢC nuốt hoàn toàn thông điệp lỗi (`$e->getMessage()`).
 
 ## 3. Workflow & Planning Guidelines
 - **Hard Pre-Implementation Gate (.md Plan Required - STRICT & UNCONDITIONAL)**:
@@ -106,6 +112,16 @@
   - DO NOT add standalone unit tests for other layers or place non-Service unit tests under `tests/Unit/Services/` to bypass this rule. Cover those behaviors through Feature tests or through a Service unit test that exercises the actual Service call chain.
   - DO NOT add unit tests for Repository implementations or contracts. Cover repository behavior through appropriate Service or Feature tests instead.
   - **Exception — test-data/fixture-only Artisan commands**: Commands whose sole purpose is to generate temporary local/STG test data or fixtures, and which do not change production runtime behavior or implement a production business workflow, are exempt from adding unit/feature tests and running PHPUnit. The command must be explicitly documented as test-data-only; if it contains production business logic or changes shared runtime behavior, this exception does not apply.
+- **Code Review Protocol (GitHub Actions Claude Review Logic - STRICT)**:
+  - Khi người dùng yêu cầu review code (review PR, review commit, review task, review code change hoặc review file):
+  - Bắt buộc áp dụng và tuân thủ chặt chẽ logic review từ GitHub Actions workflow [`.github/workflows/claude-review.yml`](file:///Users/nexusfrontiertech/projects/gap-web-backend/.github/workflows/claude-review.yml):
+    1. **Chỉ báo cáo lỗi mức độ High và Medium**:
+       - **High**: Lỗi tính đúng đắn (correctness bugs), lỗ hổng bảo mật (auth, injection, rò rỉ secret, xử lý file không an toàn), giả mạo dữ liệu tuân thủ/pháp lý (compliance/consent fabrication), mất mát dữ liệu, phá vỡ boundary/multi-tenant.
+       - **Medium**: Hành vi tiềm ẩn sai lệch (likely-incorrect behavior), thiếu xử lý ngoại lệ/lỗi tại các luồng quan trọng, race conditions, cấu hình gây chết ngầm/thất bại trong im lặng (silent failures).
+    2. **Bỏ qua hoàn toàn (OMIT)**: Lỗi Low severity, nitpicks, style, formatting, naming conventions hoặc sở thích cá nhân. Nếu một vấn đề không rõ ràng là High hoặc Medium, tuyệt đối không đưa vào báo cáo.
+    3. **Điều tra phạm vi ảnh hưởng (Blast Radius)**: Không chỉ nhìn vào từng hunk của diff; phải grep/đọc toàn bộ codebase liên quan để kiểm tra callers, consumers, database query impact, và call-chain.
+    4. **Neo vị trí chính xác (Anchors)**: Mọi finding High/Medium PHẢI có file path, số dòng cụ thể ([`file://...#L...`](file:///Users/nexusfrontiertech/projects/gap-web-backend)) và đề xuất giải pháp sửa lỗi cụ thể (concrete fix).
+    5. **Kết luận rõ ràng**: Nếu không phát hiện lỗi High hoặc Medium nào, phải ghi rõ ràng: *"No High or Medium severity issues found."*
 
 ## 4. Context & Session Management
 - **Context Rot Prevention**:

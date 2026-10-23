@@ -1,10 +1,12 @@
-# SPEC: GAP-534 — Bulk soft archive & one-time profile deletion
+# SPEC: GAP-534 — Bulk archive & one-time profile deletion
 
-> **Trạng thái**: `PHASE 2 CODED — FULL TEST PASS` — Backend implementation và verification đã pass; các blocker ownership/infra/persistent-seed còn lại phải đóng trước rollout.
+> **Trạng thái**: `R8 PLAN AMENDMENT — PENDING APPROVAL` — cập nhật ownership của candidate purge; chưa implement amendment.
 > **Ngày tạo**: 2026-10-06; **cập nhật contract**: 2026-10-12; **cập nhật phạm vi**: 2026-10-12; **Phase 1 evidence**: 2026-10-12
 > **Author**: Codex
 > **Jira**: [GAP-534](https://gappersonnel.atlassian.net/browse/GAP-534), “Consultant - Multi Candidate Selection for Bulk Archive & Auto Communicate”. Bản Jira/comment mới nhất đã đọc cập nhật 2026-10-12; In Progress; bổ sung lựa chọn gửi email Yes/No và ghi chú retention phía MatchMaker.
-> **Quyết định user**: Bulk archive bằng xóa mềm → gửi email chứa link xóa hồ sơ bằng one-time token hạn **7 ngày**. User xác nhận **giữ Yes/No theo Jira** và chọn **một bảng candidate_archive_logs + queue jobs**, bỏ bảng notification. Tiếp tục giản lược: email lấy từ Candidate; giữ nguyên email content hiện tại, không tự viết hoặc thay đổi nội dung; log không lưu lựa chọn/trạng thái/attempts email, không dùng batch UUID; API bỏ field trạng thái tab. Email archive vẫn dùng queue job; profile deletion xử lý đồng bộ trong request, không tạo purge job. Database purge phải atomic trong transaction; storage deletion chạy đồng bộ nhưng không thể rollback xuyên hệ thống. Phạm vi chỉ xử lý dữ liệu CRS; MatchMaker/provider out of scope.
+> **Revision mới nhất theo user (2026-10-19)**: Archive phải tái sử dụng `CandidateRepositoryInterface::archiveCandidateJobsByBranch()` để update nhiều candidate bằng một query set-based; phạm vi field/status được giới hạn đúng theo method này, không tự mở rộng theo logic khác. Không tạo hoặc sử dụng bảng archive-log mới. Link email chứa `id` candidate và token `StringUtility::uniqueHash(id)`; API deletion nhận `id` + token hash và cho phép xóa khi `hash_equals(StringUtility::uniqueHash(id), token)` đúng. Luồng purge phải tái sử dụng `CandidateService::deleteCandidate()`; plan phải liệt kê các cleanup còn thiếu nếu method hiện tại outdate. Giữ nguyên email content hiện có, không tự sáng tạo nội dung. Scope chỉ CRS; MatchMaker/provider out of scope.
+> **Revision mới nhất theo user (2026-10-19, pending approval)**: Bulk archive phải follow behavior archive cũ bằng cách update `candidate_jobs.status`; không soft-delete `candidates`. Phải tái sử dụng/centralize logic của `CandidateService::updateCandidateJobStatus()` thay vì tạo archive behavior riêng. Phải bổ sung reset document theo flow `ArchiveCandidates::resetDocuments()` (contract document status, contract progress và các file contract/medical liên quan). `archiveCandidateJobsByBranch()` không còn là contract chính của archive bulk nếu không thể đáp ứng đầy đủ behavior này.
+> **Revision mới nhất theo user (2026-10-19, R8 pending approval)**: Không tạo `purgeCandidateData()` trong `CandidateRepository`. `CandidateService::deleteCandidate()` phải trực tiếp điều phối các repository theo từng bảng/domain để purge candidate; chỉ bổ sung method vào repository hiện hữu hoặc tạo repository owner còn thiếu khi thật sự cần. `CandidateRepository` không được trở thành nơi gom cleanup của toàn bộ candidate.
 > **Template**: [SPEC_TEMPLATE.md](../SPEC_TEMPLATE.md)
 > **Execution**: Hai implementation phases bắt buộc: Phase 1 đồng bộ API docs trước code; Phase 2 implement và verify backend sau khi Phase 1 pass. Phase 2 backend implementation và verification đã hoàn tất; rollout/persistent DB còn phụ thuộc blocker được ghi ở execution record cuối plan.
 > **Token đã chốt**: 2026-10-07 — user chọn random token32bytes + SHA-256; không dùng JWT cho quyền xóa hồ sơ.
@@ -17,6 +19,8 @@
 - Giữ kiến trúc `Controller → FormRequest → Service → Repository`; Repository chỉ data access, Service giữ business logic/orchestration, không Service → Service.
 - Batch read trước loop; không query DB trong loop; bulk insert/update/delete; transaction chỉ bọc writes cần atomicity, không đặt read query/eager load trong transaction.
 - Dùng constants, custom exceptions và private internal helpers; không magic values, generic exceptions hoặc formatter/linter ngoài yêu cầu.
+- **Ưu tiên tái sử dụng code**: trước khi tạo class, method, repository, service, exception, job hoặc workflow mới, phải kiểm tra và tái sử dụng contract/logic hiện có nếu đáp ứng cùng business behavior. Chỉ tạo code mới khi code hiện tại không phù hợp; plan/implementation phải ghi rõ lý do không thể tái sử dụng và tránh tạo duplicate business logic.
+- **Purge ownership**: `CandidateService::deleteCandidate()` là orchestration point; không tạo một method purge tổng hợp trong bất kỳ repository nào. Service gọi các repository chuyên trách theo bảng/domain, còn mỗi repository chỉ chứa query/delete data access của chính nó.
 - Trace data origin/call chain trước khi dùng biến trong DTO/Resource/Mail/template; review và cập nhật affected tests, chạy affected suites rồi full `./vendor/bin/phpunit` ở Phase 2.
 - Diff tối thiểu, không sửa unrelated callers; giữ nguyên email content hiện tại; scope chỉ CRS. MatchMaker/provider, external tracking, email đã gửi và backup retention không thuộc purge này.
 - “Atomic” được cam kết ở DB transaction; storage deletion là synchronous/idempotent nhưng không thể rollback xuyên hệ thống nếu DB commit thất bại.
@@ -496,6 +500,13 @@ Nếu repo không tồn tại, không thể ghi hoặc chưa đồng bộ/build 
 
 **Phase 2 entry gate**: Phase 1 docs sync/build/commit/push đã pass và user approve plan; sau đó mới được viết backend code/config/template/migration.
 
+**Phase 1 amendment evidence (2026-10-13)**: Updated `docs/api/consultant/post-candidates-bulk-archive.md` with the structured `invalidParams` error example and reason catalog, and `docs/errors.md` with the consultant error-family note. `git diff --check`: PASS. `npm run build`: PASS. Commit `26038e4` (`docs: document bulk archive invalid candidate details`) pushed successfully to `origin/main` (`57d8718..26038e4`). Phase 2 implementation may proceed for this approved error-contract delta.
+
+**Phase 1 reason-catalog amendment evidence (2026-10-13)**: Added
+`archived_state_conflict` to the bulk-archive reason catalog and rebuilt the
+docs successfully. Commit `2f3fbe5` (`docs: add archive state conflict reason`)
+pushed successfully to `origin/main` (`26038e4..2f3fbe5`).
+
 ## 9. Acceptance / Review Gate
 
 - [x] Merge vào plan GAP-534 hiện hữu, không tạo plan trùng.
@@ -550,6 +561,92 @@ Nếu repo không tồn tại, không thể ghi hoặc chưa đồng bộ/build 
 - Full verification: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (616 tests, 9,307 assertions).
 - Runtime seed/migration execution remains environment-blocked: `.env` PostgreSQL host `pgsql` is unresolved and localhost has no listener; no persistent local/staging DB was modified by this workspace run.
 
+**Invalid-candidate error-contract implementation record (2026-10-13)**:
+
+- `CandidateService::bulkArchive` now completes all pre-mutation checks from
+  the batch-loaded candidate collection, collects every rejected ID, and
+  returns consultant `invalidParams` entries with per-candidate `reasons`.
+- Implemented reason constants: `not_available_in_selected_branch`,
+  `candidate_is_permanent`, `matchmaker_status_not_archivable`,
+  `no_archivable_candidate_job`, `candidate_has_blocked_job`, and
+  `archived_state_conflict`; blocked job statuses and MatchMaker status are
+  included when available. Matching already-archived candidates remain
+  idempotently valid.
+- Batch atomicity is unchanged: any pre-mutation invalid candidate rejects the
+  complete request and no valid candidate is partially archived; no database
+  query was added inside the validation loop.
+- Feature coverage added to `tests/Feature/Api/Consultant/CandidateArchiveTest.php`.
+- Targeted verification: PASS (4 tests, 28 assertions).
+- Full verification: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (617 tests, 9,317 assertions).
+- API docs reason-catalog amendment: build and `git diff --check` PASS; commit
+  `2f3fbe5` pushed to `origin/main` after `26038e4`.
+
+### Post-approval delta — split `bulkArchive()` orchestration
+
+- Refactor `CandidateService::bulkArchive()` into private helpers without
+  changing the public service contract, HTTP payload, validation reasons,
+  repository calls, transaction semantics, or email dispatch timing.
+- Keep the public method as orchestration for input normalization, batch
+  context loading, validation, archive preparation, atomic writes, post-commit
+  email dispatch, and response mapping.
+- Extract cohesive private boundaries for candidate validation, archive log/token
+  preparation, the writes-only atomic archive transaction, and post-commit email
+  dispatch. Candidate validation helpers must use the already eager-loaded
+  collection and must not issue queries inside loops.
+- Keep all extracted helpers in `CandidateService`; do not create another
+  Service or move business rules into Repositories. Preserve private visibility
+  for internal helpers.
+- Acceptance: existing targeted/full PHPUnit suites remain green, API response
+  JSON is unchanged, and `git diff --check` passes.
+
+**Refactor implementation record (2026-10-14)**:
+
+- `CandidateService::bulkArchive()` now orchestrates private helpers for input
+  normalization, batch validation, archive data preparation, atomic writes, and
+  post-commit email dispatch. No public contract, repository call semantics,
+  transaction scope, or queue timing changed.
+- Existing `CandidateArchiveTest` coverage remains green after the refactor.
+- `php -l app/Services/CandidateService.php`: PASS.
+- Targeted verification: PASS (4 tests, 28 assertions).
+- Full verification: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (617 tests, 9,317 assertions).
+- Backend `git diff --check`: PASS. Backend changes remain uncommitted.
+
+### Post-approval delta — document `CandidateArchiveLog` properties
+
+- Add PHPDoc `@property` annotations for the model fields used by the archive
+  and profile-deletion flow, including IDs, status, token hash/expiry/used time,
+  and timestamps.
+- Documentation-only model change; no schema, cast, runtime behavior, API
+  contract, or test behavior change is intended.
+
+**CandidateArchiveLog PHPDoc implementation record (2026-10-14)**:
+
+- Added `@property` annotations for IDs, status, token fields, and Carbon
+  timestamp fields in `app/Models/CandidateArchiveLog.php`.
+- PHP lint: PASS. Backend `git diff --check`: PASS.
+- Full verification: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (617 tests, 9,317 assertions).
+
+### Post-approval delta — return invalid candidate IDs
+
+- Requirement: when bulk archive validation rejects candidates, the response
+  must identify every rejected input candidate instead of failing on the first
+  ID with only a generic message.
+- Keep the existing error code/status `bulkArchiveStateConflict` / `1020` / `409`.
+- Add structured `invalidParams` entries to the consultant error response,
+  identifying each rejected `candidate_id` and its `reasons`. Supported reasons
+  are `not_available_in_selected_branch`, `candidate_is_permanent`,
+  `matchmaker_status_not_archivable`, `no_archivable_candidate_job`, and
+  `candidate_has_blocked_job`; one candidate may contain multiple reasons.
+  Preserve all-or-nothing batch behavior and do not partially archive valid IDs.
+- `approved`/`matchmaker` blocked-job statuses should be included as reason
+  detail where available. A candidate already archived in the matching cycle is
+  idempotently valid and must not be reported as invalid.
+- The IDs must be computed from the already batch-loaded collection and
+  in-memory validation; no database query is allowed inside the candidate loop.
+- This is an API error payload change. Before implementation, update the
+  corresponding API docs/error example and add Feature coverage for multiple
+  invalid IDs and rejection reasons.
+
 ## 10. Thứ tự triển khai sau approve
 
 ### Phase 1 — API docs first
@@ -570,3 +667,1168 @@ Nếu repo không tồn tại, không thể ghi hoặc chưa đồng bộ/build 
 7. **Deployment readiness**: chỉ tiếp tục rollout đã được authorize khi code/test/living specs và Phase 1 docs sync đều pass; repo docs thiếu/không ghi được/chưa sync là blocker. Plan không tự cấp quyền deployment hoặc publish docs.
 
 Rollout chỉ khi migrations/master template/trusted frontend link/async email queue workers sẵn sàng; không phát hành email link hứa xóa khi synchronous purge chưa hoạt động. Rollback phải dừng email dispatch/workers và giữ archive receipts/file metadata cùng pending encrypted email queue payloads; không drop bảng log khi còn cleanup. Không xóa pending email queue jobs trước khi xác định và lưu recovery state. Không chạy old archive CLI làm bước thử bulk workflow mới.
+
+### Post-approval delta — remove unused bulk-archive repository method
+
+- Remove `getActiveCandidatesForBulkArchive()` from
+  `CandidateRepository` and `CandidateRepositoryInterface` because the current
+  `CandidateService::bulkArchive()` uses `getCandidatesForBulkArchive()` and
+  performs the complete validation in the Service to return per-candidate
+  invalid reasons.
+- No API contract, database behavior, transaction scope, or runtime bulk archive
+  flow change is intended.
+- Verification: search for remaining references, run PHP lint on the changed
+  repository files, run the affected CandidateArchive feature test and the full
+  PHPUnit suite, then run `git diff --check`.
+
+**Unused-method removal implementation record (2026-10-14)**:
+
+- Removed `getActiveCandidatesForBulkArchive()` from
+  `CandidateRepository` and `CandidateRepositoryInterface`.
+- Confirmed no remaining references in the repository outside `vendor/`.
+- PHP lint: PASS for both changed PHP files.
+- Targeted verification: `CandidateArchiveTest` PASS (4 tests, 28 assertions).
+- Full verification: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (617 tests, 9,317 assertions).
+- Backend `git diff --check`: PASS.
+
+### Post-approval delta — hard-purge storage ordering and local duplication cleanup
+
+- Move candidate file `Storage::delete()` calls from before the profile-deletion
+  database transaction to after the transaction commits successfully. File paths
+  remain preloaded before the transaction, but physical storage deletion must
+  never happen while the database state can still roll back.
+- A post-commit storage failure cannot roll back the already committed database
+  purge. Log the candidate ID and affected paths for recoverable orphan-storage
+  cleanup without converting a successful database deletion into a retryable
+  token failure.
+- Extend `CandidatePurgeRepository::purgeCandidateData()` to delete local
+  `match_maker_duplication_processes` rows by `candidate_id` inside the existing
+  database transaction. This is CRS-local candidate-owned state; external
+  MatchMaker/provider data remains out of scope.
+- No API contract, migration, external MatchMaker behavior, or archive flow
+  change is intended. API docs: N/A — no API contract/API docs change.
+- Verification: add/update profile-deletion Feature coverage for transaction
+  rollback preserving storage files and successful post-commit cleanup, cover
+  duplication-process cleanup, run PHP lint, affected tests, full PHPUnit, and
+  `git diff --check`. Update the living business/database specs with the final
+  ordering and relationship behavior after implementation.
+
+**Storage-ordering and local-relationship cleanup implementation record (2026-10-14)**:
+
+- Profile deletion now commits the database purge before deleting preloaded
+  candidate storage paths. Post-commit storage failures are logged as
+  recoverable orphan-storage cases and do not invalidate the committed purge.
+- `CandidatePurgeRepository` now deletes local
+  `match_maker_duplication_processes` rows by candidate ID inside the purge
+  transaction; external MatchMaker/provider records remain out of scope.
+- Feature coverage verifies successful post-commit storage cleanup,
+  duplication-process cleanup, and storage preservation when the DB state
+  conflict rolls back the transaction.
+- PHP lint: PASS for changed PHP files.
+- Targeted verification: `CandidateArchiveTest` PASS (5 tests, 40 assertions).
+- Full verification: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (630 tests, 9,361 assertions).
+- Living specs updated: `.business-spec/backend-business-flow-spec.md` and
+  `.business-spec/backend-database-relationship.md`; API docs: N/A — no
+  contract change.
+- Backend `git diff --check`: PASS.
+
+### Post-approval delta — inline trivial bulk-archive helper
+
+- Inline the single-use `getExpectedBulkArchiveJobUpdates()` calculation into
+  `CandidateService::bulkArchive()` and remove the private helper.
+- Keep the other private helpers because they represent separate validation,
+  data-preparation, transaction, or post-commit dispatch responsibilities.
+- No API contract, database behavior, transaction scope, queue timing, or
+  business rule change is intended.
+- Verification: PHP lint, affected CandidateArchive feature test, full PHPUnit,
+  and `git diff --check`.
+
+**Trivial-helper inline implementation record (2026-10-14)**:
+
+- Inlined the expected candidate-job update count calculation into
+  `CandidateService::bulkArchive()` and removed the single-use
+  `getExpectedBulkArchiveJobUpdates()` helper.
+- The bulk archive business logic, transaction boundary, API contract, and
+  queue timing remain unchanged.
+- PHP lint: PASS.
+- Targeted verification: `CandidateArchiveTest` PASS (4 tests, 28 assertions).
+- Full verification: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (617 tests, 9,317 assertions).
+- Backend `git diff --check`: PASS.
+
+### Post-approval delta — Finding 1: enforce consultant branch authorization
+
+#### 1. Finding và baseline đã xác minh
+
+- `POST /api/consultant/candidates/bulk_archive` nằm sau middleware
+  `detectBranchForConsultant`, middleware lấy `Gap-Branch-ID` từ request header
+  và gọi `UserService::allowToAccessTheBranch()` trước khi gắn `branch_id` vào
+  request.
+- `UserService::allowToAccessTheBranch()` hiện coi mọi user có role
+  `consultant` là được truy cập mọi branch, vì `ROLE_CONSULTANT` đang nằm trong
+  nhánh bypass trước khi gọi
+  `UserBranchRepository::existByUserIdAndBranchAndRole()`.
+- Đây là authorization bypass nghiêm trọng hơn khi áp dụng cho bulk archive:
+  consultant có thể gửi branch ID bất kỳ và kích hoạt archive hàng loạt cùng
+  các side effect purge qua email deletion link.
+- Phạm vi ảnh hưởng không chỉ bulk archive: mọi consultant route dùng
+  `detectBranchForConsultant` sẽ dùng chung helper authorization này. Cần sửa
+  centralized rule và regression-test các route quan trọng, không thêm guard
+  riêng trong `CandidateController`.
+
+#### 2. Quyết định contract cần approve
+
+- `ADMIN` và `COMPLIANCE` giữ nguyên blanket branch access hiện tại khi user có
+  đúng role.
+- `CONSULTANT` không được blanket bypass. User phải có row trong
+  `user_branches` với `user_id`, `branch_id` được yêu cầu và role
+  `consultant` trong JSON `roles`.
+- `can_access_all_branches` không tự tạo bypass mới cho consultant trong scope
+  này; quyền consultant vẫn được quyết định bằng branch membership hiện có.
+- Consultant có membership hợp lệ được tiếp tục qua middleware và nhận đúng
+  behavior hiện tại.
+- Consultant không có membership, hoặc gửi `Gap-Branch-ID` của branch khác,
+  bị reject tại middleware với HTTP/error contract hiện tại
+  `branchAccessNotAllowed`; controller/service không được chạy và không có DB
+  mutation, queue dispatch hoặc storage side effect.
+- Không thay đổi request body, response success payload, candidate validation
+  reasons, archive transaction, email template/content, token hoặc purge
+  scope của GAP-534.
+
+#### 3. API docs-first phase
+
+**Phase 1 — API docs assessment/update trước backend code**
+
+1. Review docs contract của
+   `POST /api/consultant/candidates/bulk_archive`, đặc biệt auth/header,
+   branch scope và lỗi `branchAccessNotAllowed`.
+2. Nếu docs hiện chưa mô tả đủ branch membership, update tối thiểu các file
+   thuộc contract:
+   - `~/projects/crs-api-docs/docs/api/consultant/post-candidates-bulk-archive.md`
+   - `~/projects/crs-api-docs/docs/flows/candidate-lifecycle.md` nếu flow
+     archive có mô tả branch authorization.
+   - route/coverage metadata chỉ khi validation hiện tại yêu cầu thay đổi.
+3. Ghi rõ consultant phải có `user_branches` membership cho branch header;
+   request branch không được phép trả lỗi authorization hiện tại và không có
+   mutation. Không thay đổi error code/message nếu source contract hiện tại đã
+   khớp.
+4. Chạy docs build, link/format checks và `git diff --check`; đánh dấu docs
+   behavior theo convention repo.
+5. Chỉ khi docs pass mới commit các file docs thuộc Finding 1 và push commit
+   lên remote `main`. Ghi file diff, validation result, commit SHA và push
+   result vào plan trước khi bắt đầu Phase 2.
+
+**Phase 1 acceptance gate**: docs phản ánh đúng branch-membership rule,
+`branchAccessNotAllowed` error và no-mutation boundary; docs checks pass; docs
+commit đã push thành công lên `main`.
+
+#### 4. Backend implementation phase
+
+**Phase 2 — centralized authorization fix và verification**
+
+1. Sau Phase 1 pass và user approve delta này, sửa
+   `app/Services/UserService.php` để chỉ `ADMIN`/`COMPLIANCE` giữ bypass;
+   `CONSULTANT` đi qua `UserBranchRepository::existByUserIdAndBranchAndRole()`.
+2. Không query trong loop, không thêm query/logic vào Controller hoặc
+   `CandidateService`; giữ middleware làm điểm resolve branch và giữ
+   architecture `Middleware → UserService → UserBranchRepository`.
+3. Audit toàn bộ routes dùng `detectBranchForConsultant`; xác nhận thay đổi
+   centralized này không phá behavior của consultant có membership và không
+   mở quyền cho branch ngoài membership.
+4. Bổ sung/update Feature tests, tối thiểu:
+   - consultant có membership đúng branch: bulk archive vẫn thành công;
+   - consultant gửi branch khác/không có membership: middleware trả
+     `branchAccessNotAllowed`, HTTP error hiện tại, candidate không bị soft
+     delete, candidate job/star/archive log không đổi và không enqueue email;
+   - admin/compliance blanket access hiện tại không regression;
+   - consultant role có `can_access_all_branches=true` nhưng không có
+     membership vẫn không được dùng cờ này để bypass trong rule mới;
+   - regression cho ít nhất một consultant read/update route dùng cùng
+     middleware, nếu test inventory cho thấy route đó có coverage hiện hữu.
+5. Test impact review các test consultant branch và user branch hiện có; không
+   tạo Repository unit test. Nếu cần test business method độc lập thì đặt tại
+   `tests/Unit/Services/`, còn authorization boundary ưu tiên Feature test.
+6. Chạy `php -l` các PHP files sửa, affected PHPUnit suites và full
+   `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit`;
+   chạy `git diff --check` và self-check theo contract này.
+
+#### 5. Files ownership dự kiến
+
+| File | Thay đổi dự kiến |
+|---|---|
+| `app/Services/UserService.php` | Bỏ consultant khỏi blanket bypass; giữ admin/compliance rule |
+| `tests/Feature/Api/Consultant/CandidateArchiveTest.php` | Thêm cross-branch authorization/no-mutation coverage cho bulk archive |
+| `tests/Feature/Api/Consultant/CandidatesTest.php` hoặc test phù hợp đã có | Regression route dùng `detectBranchForConsultant`, chỉ sửa nếu cần |
+| `tests/Feature/Api/User/...` | Chỉ sửa nếu test hiện hữu trực tiếp assert branch authorization helper behavior |
+| `~/projects/crs-api-docs/...` | Docs-first contract update và commit/push theo Phase 1 |
+| `.business-spec/backend-business-flow-spec.md` | Cập nhật current branch authorization behavior sau implementation |
+| `.business-spec/backend-api-route-inventory.md` | Cập nhật nếu route middleware/error contract được mô tả chưa đúng |
+
+Không tạo migration, model, repository mới, exception mới, email template,
+queue job hoặc thay đổi MatchMaker/purge logic cho Finding 1.
+
+#### 6. Rollout/verification boundary
+
+- Không triển khai backend code trước khi docs Phase 1 pass và được ghi nhận
+  trong plan.
+- Không cần migration hoặc data backfill; rule đọc membership hiện hữu trong
+  `user_branches`.
+- Rollback code là khôi phục điều kiện authorization cũ, nhưng không được dùng
+  rollback để cấp lại quyền cross-branch nếu security finding chưa được đánh
+  giá; mọi rollback phải được ghi nhận cùng impact.
+- **Trạng thái delta sau Phase 1**: `PHASE 1 PASS — sẵn sàng Phase 2`; chưa sửa
+  backend, chưa chạy migration, chưa commit/push backend.
+
+**Finding 1 Phase 1 implementation record (2026-10-14)**:
+
+- API docs updated:
+  - `~/projects/crs-api-docs/docs/api/consultant/post-candidates-bulk-archive.md`
+  - `~/projects/crs-api-docs/docs/flows/candidate-lifecycle.md`
+- Docs now state that consultants must have a matching `user_branches` row with
+  the `consultant` role, arbitrary `Gap-Branch-ID` and consultant
+  `can_access_all_branches` do not bypass membership, and middleware rejection
+  has no candidate/job/star/archive-log/email-job mutation.
+- Docs explicitly mark the security hardening as `NOT DEPLOYED` until backend
+  Phase 2 is complete.
+- `npm run build`: PASS.
+- Docs `git diff --check`: PASS.
+- Docs commit: `fc5698c` (`docs(GAP-534): document consultant branch authorization`).
+- Push: PASS to `origin/main`.
+- Phase 1 gate: PASS. Backend Phase 2 is now authorized to proceed under the
+  approved contract above.
+
+**Finding 1 Phase 2 implementation record (2026-10-14)**:
+
+- `UserService::allowToAccessTheBranch()` now keeps blanket access only for
+  users with global `ADMIN`/`COMPLIANCE` role. `CONSULTANT` falls through to
+  `UserBranchRepository::existByUserIdAndBranchAndRole()` and must have the
+  requested branch membership with the consultant role.
+- No controller, middleware, CandidateService, repository contract, migration,
+  email, queue, purge or MatchMaker logic was added/changed. The existing
+  middleware remains the centralized rejection boundary and returns the current
+  `branchAccessNotAllowed` response before service execution.
+- Feature coverage added for bulk archive cross-branch rejection with
+  `can_access_all_branches=true`; candidate, candidate job, star, archive log
+  and email queue remain unchanged after rejection.
+- Existing consultant Feature fixtures were updated only where they used a
+  branch in the request without assigning that branch to the authenticated
+  consultant. Existing compliance/consultant mixed-role fixture was updated to
+  express both memberships explicitly; no production role rule was broadened.
+- Living business spec updated:
+  `.business-spec/backend-business-flow-spec.md`. Route inventory already
+  listed `detectBranchForConsultant`; no route declaration change was needed.
+- PHP lint: PASS for all changed PHP files.
+- Targeted GAP-534 archive test: PASS (6 tests, 47 assertions).
+- Full consultant Feature suite: PASS (150 tests, 778 assertions).
+- Full PHPUnit: PASS (631 tests, 9,368 assertions).
+- Backend `git diff --check`: PASS.
+- Final docs sync after implementation: `npm run build` PASS and docs
+  `git diff --check` PASS; commit `bd5e55f`
+  (`docs(GAP-534): verify branch authorization guard`) pushed successfully to
+  `origin/main`. Initial docs-first commit was `fc5698c`.
+- **Finding 1 status**: `DONE` on working tree; backend changes remain
+  uncommitted and production deployment/persistent DB behavior remain
+  unverified.
+
+### Post-implementation clarification — require global and branch consultant roles
+
+- The current Finding 1 implementation removes `ROLE_CONSULTANT` from the
+  blanket branch bypass and falls through to the branch-membership lookup.
+- Contract clarification: consultant branch access must require both:
+  1. the authenticated `User` has the global `consultant` role; and
+  2. `user_branches` contains the requested branch with `consultant` in its
+     `roles` JSON.
+- A user who has only the branch-level consultant role but lacks the global
+  consultant role must be rejected with the existing
+  `branchAccessNotAllowed` response. This prevents a branch row from granting
+  consultant privileges by itself.
+- Keep the existing behavior for global `ADMIN`/`COMPLIANCE` blanket access.
+  No migration, route, archive, email, queue, purge or MatchMaker behavior
+  changes are needed.
+- Update API docs to state the dual-role requirement, add Feature coverage for
+  branch-role-only rejection, rerun affected/full PHPUnit and docs build, then
+  update the implementation record.
+- **Status**: `SUPERSEDED — không thuộc scope GAP-534`.
+
+### Scope decision — defer shared consultant branch authorization to security task
+
+- Finding 1 là lỗi authorization dùng chung của
+  `allowToAccessTheBranch()`/`detectBranchForConsultant`, ảnh hưởng nhiều
+  consultant endpoint chứ không chỉ bulk archive. Không tiếp tục sửa logic này
+  trong GAP-534.
+- GAP-534 giữ nguyên scope archive/profile deletion đã được approve; không yêu
+  cầu global-role + branch-role dual check trong task này.
+- Security follow-up riêng phải chốt và implement rule:
+  `global consultant role AND branch-level consultant role`, đồng thời audit
+  toàn bộ consultant routes dùng middleware chung.
+- Các backend test fixture/docs được thêm riêng cho Finding 1 trong working
+  tree/docs repo phải được rollback hoặc revert khỏi GAP-534 trước khi đóng
+  task. Không dùng rollback để xóa các thay đổi unrelated của user.
+- API docs synchronization cho Finding 1 phải được revert về contract hiện tại;
+  commit revert docs cần được ghi nhận nếu đã push lên `origin/main`.
+- **Trạng thái**: `SCOPE DEFERRED — chờ approve rollback các thay đổi Finding 1`.
+
+**Finding 1 rollback implementation record (2026-10-14)**:
+
+- Rolled back the uncommitted `UserService` authorization change and all
+  Finding 1-only Feature fixture/test changes from the GAP-534 backend
+  worktree. Existing unrelated user changes were preserved.
+- Reverted the two Finding 1 docs changes in `crs-api-docs`; docs build and
+  `git diff --check` passed before the revert commit.
+- Docs revert commit: `4f9820f`
+  (`revert(GAP-534): defer branch authorization docs`) pushed successfully to
+  `origin/main`.
+- Backend `git diff --check`: PASS; no Finding 1 backend diff remains.
+- Full PHPUnit after rollback: PASS (630 tests, 9,361 assertions).
+- GAP-534 no longer changes shared consultant branch authorization. Finding 1
+  is deferred to a separate security task requiring the agreed dual check:
+  global consultant role **and** branch-level consultant role.
+
+## Latest plan revision — reuse existing archive/delete logic (2026-10-19)
+
+Phần này là source of truth mới nhất cho implementation tiếp theo. Các phần
+trước mô tả candidate_archive_logs, random one-time token, token expiry,
+token consumption, CandidatePurgeRepository và contract POST không body chỉ
+còn là historical record; không được implement lại các quyết định đó.
+
+**Rule ưu tiên tái sử dụng**: mọi bước implementation phải bắt đầu bằng việc
+trace và đánh giá code hiện có. Ưu tiên gọi lại hoặc mở rộng có kiểm soát
+`CandidateRepositoryInterface`, `CandidateService`, `StringUtility`,
+`ProfileDeletionRequest`, email template/seeder và các contract hiện hữu. Không
+tạo một method/service/repository/job/table mới nếu có thể dùng lại logic hiện
+tại với thay đổi tối thiểu. Nếu bắt buộc tạo mới, phải ghi rõ trong plan
+business behavior nào chưa có, vì sao không thể tái sử dụng, và cách bảo đảm
+không duplicate logic với caller cũ.
+
+### R1. Archive candidate jobs bằng repository hiện hữu
+
+CandidateRepositoryInterface::archiveCandidateJobsByBranch() hiện đã có trong
+working tree tại app/Contracts/Repositories/CandidateRepositoryInterface.php
+và implementation tại app/Repositories/CandidateRepository.php. Vì vậy,
+không tạo thêm một method archive khác. Nếu branch triển khai thực tế chưa có
+method này, bổ sung đúng contract hiện tại:
+
+- nhận candidateIds, branchId, danh sách status được archive, status đích và
+  archivedAt;
+- dùng một set-based UPDATE trên candidate_jobs;
+- scope bằng candidate_id IN (...), job.branch_id = branchId và
+  status IN (...);
+- chỉ update candidate_jobs.status và candidate_jobs.updated_at;
+- trả về số row thực sự được update.
+
+Service sẽ preload và validate candidate/branch trước transaction, sau đó gọi
+method này một lần trong transaction cùng các write archive khác. Không gọi
+repository này trong loop và không dùng nó để update Candidate, stars, email,
+activity log hoặc deletion state.
+
+#### Phạm vi logic phải kiểm tra lại trước code
+
+Current implementation dùng CandidateJob::ARCHIVABLE_STATUSES, hiện gồm
+screening_call và interview, và target CandidateJob::STATUS_ARCHIVED. Đây là
+phạm vi duy nhất được phép đưa vào bulk archive theo revision này, trừ khi user
+approve thay đổi khác.
+
+Các điểm có thể outdate hoặc khác với archive đơn:
+
+- archiveCandidateJobsByBranch() không tự bỏ qua matchmaker; việc này được bảo
+  đảm bằng allowlist status đầu vào, không được truyền thêm approved/matchmaker
+  một cách ngầm định;
+- method này không thực hiện nhánh unarchive, không gửi welcome-back email,
+  không detach star và không xử lý side effect của
+  CandidateService::updateCandidateJobStatus();
+- method này update mọi candidate job đủ điều kiện của candidate trong branch
+  được truyền vào, không chỉ một selected job. Cần xác nhận đây là phạm vi
+  mong muốn của bulk archive;
+- method này không archive job ở branch khác. Tuy nhiên Candidate.deleted_at
+  là global, nên Service vẫn phải giữ guard hiện có để không soft-delete
+  candidate đang có workflow active ở branch khác;
+- method này không update Candidate.deleted_at. Soft archive candidate, detach
+  star và các side effect còn lại vẫn thuộc Service workflow;
+- Service phải so sánh số row update thực tế với trạng thái đã preload và xử lý
+  state conflict theo custom exception hiện có.
+
+**Cần user kiểm tra trước implementation**: giữ nguyên allowlist
+SCREENING_CALL/INTERVIEW, update toàn bộ job cùng branch như method hiện tại,
+và không mang các side effect của archive đơn vào bulk archive ngoài các side
+effect đã được plan ghi rõ.
+
+### R2. Bỏ archive log và chuyển sang uniqueHash(id)
+
+Không tạo bảng mới và không lưu lifecycle/token state cho archive. Cần loại bỏ
+dependency runtime vào candidate_archive_logs trong luồng mới. Việc xử lý
+migration phụ thuộc trạng thái deploy:
+
+- nếu migration tạo candidate_archive_logs chưa từng deploy: loại bỏ các
+  artifact chưa cần thiết khỏi implementation. Migration hiện mới chạy local,
+  nên được xác nhận là có thể xoá khỏi scope/code path của task;
+- nếu đã deploy ở bất kỳ environment nào: giữ lịch sử migration và tạo một
+  migration drop riêng theo quy trình deploy, không xóa migration cũ khỏi
+  history;
+- trước khi code phải xác nhận trạng thái này để không làm sai migration
+  history.
+
+Không dùng lại random token, token hash lưu DB, TTL 7 ngày, token_used_at,
+latest archive log hoặc one-time consume. Token mới là deterministic hash từ
+candidate ID bằng utility hiện hữu:
+
+    $token = StringUtility::uniqueHash($candidateId);
+
+Email link truyền id và token theo URL contract của frontend:
+...?id={candidateId}&token={uniqueHash(candidateId)}. Không đưa raw secret,
+archive-log ID hoặc token state khác vào link. Email job chỉ cần truyền
+candidate ID (và context branch nếu template hiện tại cần); token được tạo khi
+compose link bằng StringUtility::uniqueHash().
+
+API deletion giữ route profile deletion hiện có nhưng đổi request contract:
+
+- GET preview nhận id và token từ query string;
+- POST confirm nhận id và token từ body theo API docs; nếu frontend đang dùng
+  cùng request shape cho GET/POST thì ghi rõ cùng tên field ở cả hai;
+- FormRequest validate id là integer candidate ID và token là string hash;
+- Service lấy candidate theo id, sau đó dùng constant-time comparison:
+  hash_equals(StringUtility::uniqueHash($id), $token);
+- sai ID/token, candidate không tồn tại hoặc candidate không ở trạng thái đủ
+  điều kiện deletion đều trả custom API error hiện hữu; không query một bảng
+  token mới.
+
+Vì hash deterministic và không có DB state, link có thể replay về mặt token.
+Replay sau khi candidate đã force-delete phải fail vì candidate không còn tồn
+tại. Cần ghi rõ đây là contract được chấp nhận thay cho expiry/one-time token;
+nếu vẫn cần expiry hoặc one-time semantics thì revision này phải được dừng để
+user chọn thiết kế khác.
+
+### R3. Tái sử dụng CandidateService::deleteCandidate()
+
+Profile deletion không gọi CandidatePurgeRepository::purgeCandidateData()
+riêng nữa. Service sẽ gọi cùng workflow:
+
+    ProfileDeletionRequest(id, token)
+      -> verify id/token and archived/deletion eligibility
+      -> CandidateService::deleteCandidate(id, includeTrashed: true)
+      -> synchronous CRS cleanup and force-delete
+
+deleteCandidate() phải giữ tương thích với các caller admin/compliance hiện
+tại. Cách dự kiến là thêm option nội bộ có default bảo toàn behavior cũ để
+lookup được soft-deleted candidate cho public deletion flow; không tạo một
+service purge thứ hai và không copy lại danh sách cleanup ở controller.
+
+#### Những cleanup hiện tại cần bổ sung/kiểm tra trong deleteCandidate()
+
+So với cleanup matrix của flow profile deletion hiện tại, method hiện hữu đang
+thiếu hoặc cần xác nhận các mục sau:
+
+- communication_note_change_logs cùng communication_notes;
+- escalated_issues, escalated_issue_logs, escalated_issue_change_logs;
+- candidate_job_appointments và appointments;
+- candidate_progress_emails, candidate_timings, candidate_snapshots,
+  candidate_welfare_checks, consultant_declarations;
+- candidate_skills, candidate_tags, starred_candidates,
+  candidate_face_matching_rates;
+- legal_entity_switching_requests, candidate_tokens;
+- match_maker_duplication_processes;
+- tracking_record_histories, activity_logs;
+- sms_candidate_campaigns, sms_receivers;
+- cập nhật sms_pre_campaigns.receiver_ids để loại candidate ID khỏi JSON,
+  không xóa toàn bộ pre-campaign dùng chung;
+- candidate_password_resets theo email candidate nếu đây là record
+  candidate-owned trong flow hiện tại.
+
+Các mục không được tự thêm vào purge:
+
+- match_maker_candidates: không có candidate_id ổn định và liên kết bằng
+  peo_no/email; flow GDPR hiện tại không có cleanup trực tiếp cho bảng này.
+  Không bulk-delete theo email trong GAP-534 nếu chưa có quyết định/contract
+  riêng của MatchMaker;
+- shared staff data như users, user_branches, branches, auth logs của staff,
+  legal entities, jobs hoặc dictionaries;
+- email đã gửi, backup/retention ngoài CRS và provider/MatchMaker data.
+
+File cleanup phải bao phủ metadata rows có candidate_id hoặc
+original_candidate_id, và storage paths ở cả url lẫn converted_file_url nếu
+có. Paths phải được preload trước transaction; DB deletes phải batch/set-based,
+không forceDelete() từng file trong loop. Storage delete chạy sau DB commit.
+Nếu storage delete lỗi, giữ DB state đã purged và ghi nhận orphan storage theo
+logging/retry convention hiện tại; không đưa storage call vào transaction và
+không để file delete trước commit.
+
+CandidatePurgeRepository, binding, contract, model/migration của
+CandidateArchiveLog và các Service references chỉ được xóa khi không còn
+caller sau khi chuyển deleteCandidate(). Nếu repository còn cần làm pure data
+access, nó chỉ được gọi từ CandidateService::deleteCandidate() và không được
+chứa business branching hoặc tạo thêm purge workflow.
+
+### R4. Email và seeder
+
+- Giữ nguyên chính xác email content hiện có trong Jira/template; chỉ thay
+  placeholder/link data theo contract id + uniqueHash(id).
+- Không tạo seed file mới. Cập nhật row/template hiện có trong
+  database/seeders/data/email_templates.csv theo format đang dùng và chạy
+  seeder hiện hữu theo quy trình của project.
+- Email archive vẫn dispatch sau khi archive transaction commit; deletion API
+  vẫn xử lý đồng bộ, không tạo purge job.
+- Vì không có archive log/token state, email job không được phụ thuộc vào
+  archiveLogId, rawToken, expiry hoặc token consume state.
+
+### R5. API docs-first và test gate
+
+Đây là API contract change nên Phase 1 phải cập nhật
+~/projects/crs-api-docs trước code:
+
+- document GET/POST profile deletion với id và token;
+- document invalid hash, missing candidate, non-eligible candidate và success
+  responses;
+- document bulk archive job update chỉ giới hạn theo
+  archiveCandidateJobsByBranch;
+- giữ nguyên email content/link semantics trong examples, không invent content;
+- validate docs, commit và push docs lên origin/main, ghi SHA vào plan.
+
+Phase 2 chỉ bắt đầu sau khi Phase 1 pass. Test bắt buộc:
+
+- bulk archive nhiều candidate chứng minh một set-based repository update,
+  đúng branch/status allowlist, không update matchmaker/branch khác và không có
+  archive-log insert;
+- email job/link chứa đúng candidate ID và StringUtility::uniqueHash(id);
+- GET/POST deletion với đúng/sai ID-token, candidate active, candidate soft
+  deleted và replay sau force-delete;
+- deleteCandidate() cover cleanup matrix ở R3, gồm
+  match_maker_duplication_processes, tracking/activity logs, SMS relations,
+  file original/converted paths và storage-after-commit behavior;
+- existing admin/compliance callers của deleteCandidate() không đổi contract;
+- không còn query, model, job hoặc migration runtime nào phụ thuộc
+  candidate_archive_logs trong flow mới;
+- review toàn bộ affected tests, chạy targeted suites và full
+  ./vendor/bin/phpunit.
+
+### R6. Các quyết định cần user confirm trước khi implement
+
+1. **Đã xác nhận** — Giữ đúng CandidateJob::ARCHIVABLE_STATUSES hiện tại
+   (screening_call, interview) và update tất cả job đủ điều kiện của candidate
+   trong branch, không mang behavior unarchive/welcome-back của archive đơn vào
+   bulk flow.
+2. **Đã xác nhận** — Chấp nhận token deterministic uniqueHash(candidateId) không expiry và không
+   one-time DB state; candidate đã force-delete sẽ là chốt replay.
+3. **Đã xác nhận** — Migration candidate_archive_logs mới chạy dưới local,
+   chưa deploy môi trường khác; được phép xoá artifact, không tạo drop migration.
+4. **Đã xác nhận** — Giữ danh sách cleanup bổ sung ở R3, đặc biệt tracking histories,
+   activity logs, SMS relations, files converted/original và
+   match_maker_duplication_processes.
+
+**Implementation gate**: bốn điểm R6 đã được user approve. Phase 1 docs-first
+đã pass; backend implementation được phép bắt đầu từ Phase 2. Turn cập nhật
+plan này không sửa backend code, không chạy migration và không seed dữ liệu.
+
+### Phase 1 docs-first evidence (2026-10-19)
+
+- Updated files in `~/projects/crs-api-docs`:
+  - `docs/api/candidate/get-profile-deletion.md`
+  - `docs/api/candidate/post-profile-deletion.md`
+  - `docs/api/consultant/post-candidates-bulk-archive.md`
+  - `docs/flows/candidate-lifecycle.md`
+  - `docs/authentication.md`
+  - `docs/api/index.md`
+  - `docs/api/candidate/index.md`
+  - `docs/api/consultant/index.md`
+  - `docs/_meta/route-coverage.md`
+  - `docs/_meta/source-inventory.md`
+- Contract status is marked `PLANNED_NOT_DEPLOYED`; the revised contract is
+  not represented as deployed runtime behavior before backend implementation.
+- Validation: `git diff --check` PASS; `npm run build` PASS.
+- Docs commit: `3424501` (`docs(GAP-534): revise archive deletion contract`).
+- Push: commit `3424501` pushed successfully to `origin/main`.
+- **Phase 1 status: PASS.** Phase 2 backend implementation may start.
+
+### Phase 2 backend implementation evidence (2026-10-19)
+
+- Reused the existing CandidateRepositoryInterface::archiveCandidateJobsByBranch
+  set-based update; bulk archive now limits job updates to the existing
+  CandidateJob::ARCHIVABLE_STATUSES and selected branch.
+- Removed the local-only candidate_archive_logs migration, model, repository
+  contract/implementation and provider binding. No drop migration was created.
+- Replaced random/header token flow with id + StringUtility::uniqueHash(id);
+  GET uses query parameters and POST uses JSON fields. Comparison uses
+  constant-time hash validation.
+- Reused CandidateService::deleteCandidate() for profile deletion with an
+  include-trashed lookup. Candidate cleanup remains centralized through the
+  existing CandidatePurgeRepository data-access helper; storage deletion runs
+  after the DB transaction commits.
+- Added missing cleanup coverage for candidate-owned CRS data, including local
+  MatchMaker duplication rows, tracking/activity rows, SMS relations and both
+  original/converted file storage paths. match_maker_candidates remains out
+  of scope.
+- Kept the existing candidate_archive email template/content; no new seed file
+  was created and the existing CSV row already contains the approved content.
+  The email link now carries candidate ID and deterministic hash.
+- Updated affected Feature coverage in
+  tests/Feature/Api/Consultant/CandidateArchiveTest.php.
+- Verification: targeted GAP-534 suite PASS (6 tests, 34 assertions); PHP lint
+  PASS for changed PHP files; git diff --check PASS; full PHPUnit PASS
+  (631 tests, 9,355 assertions).
+- Living business specs updated:
+  .business-spec/backend-business-flow-spec.md,
+  .business-spec/backend-api-route-inventory.md,
+  .business-spec/backend-database-relationship.md.
+- Post-implementation docs sync in ~/projects/crs-api-docs updated the
+  endpoints from PLANNED_NOT_DEPLOYED to CODE_ONLY/code-verified. Docs build
+  and git diff --check passed; amendment commit 07ee130
+  (docs(GAP-534): mark revised contract verified) was pushed successfully to
+  origin/main.
+- Phase 2 status: PASS. Backend code remains uncommitted; unrelated
+  pre-existing worktree changes were preserved.
+
+## R7. Revision — bulk archive follows the existing job-archive flow
+
+**Status**: Approved; R7 docs-first gate passed. This section supersedes the current bulk
+archive behavior described in earlier sections and the Phase 2 evidence above.
+The earlier implementation soft-deleted `candidates` and used
+`archiveCandidateJobsByBranch()` with an allowlist; that behavior must not be
+carried forward into R7.
+
+### R7.1. Archive contract
+
+- Bulk archive must follow the existing archive behavior in
+  `CandidateService::updateCandidateJobStatus()` by changing
+  `candidate_jobs.status` to `CandidateJob::STATUS_ARCHIVED`.
+- The Candidate row must remain active: do not update `candidates.deleted_at`,
+  do not call `archiveActiveByIds()`, and do not change Candidate login,
+  signup, or default Eloquent visibility as a side effect of archive.
+- Archive the candidate's jobs in the selected branch using the same rule as
+  the existing flow: archive every job in that branch except jobs whose
+  current status is `CandidateJob::STATUS_MATCHMAKER`. Existing eligibility
+  guards for `APPROVED`/`MATCHMAKER` must remain explicit and must be reconciled
+  with the old single-candidate behavior before implementation.
+- Do not call `updateCandidateJobStatus()` once per candidate/job from a bulk
+  loop. That would reintroduce per-record reads/writes and would violate the
+  batch/no-N+1 rule. Instead, extract or centralize the old archive rule so the
+  single-candidate path and bulk path use the same business behavior, while
+  bulk writes are performed in a set-based/atomic operation.
+- Audit all callers of `archiveCandidateJobsByBranch()` and
+  `archiveActiveByIds()`. Remove the obsolete bulk-only archive method and its
+  contract entry if no other caller needs it; otherwise keep it only for its
+  remaining caller and do not use it as the source of truth for R7 archive
+  semantics.
+- Keep the existing response shape and `send_email` choice. Email dispatch
+  remains after the archive writes commit. The existing candidate archive
+  email content is unchanged.
+
+### R7.2. Reset document behavior
+
+Bulk archive must include the same reset-document behavior currently used by
+`ArchiveCandidates::resetDocuments()` after an archive:
+
+1. For affected candidate jobs whose `contract_document_status` is at or past
+   `CandidateJob::CONTRACT_DOCUMENT_STATUS_SIGNED_SERVICES_AND_TERMS_OF_ENGAGEMENT`,
+   reset the document status to
+   `CandidateJob::CONTRACT_DOCUMENT_STATUS_WATCHED_KEY_INFORMATION_DOCUMENT`.
+2. Reset contract progress to `CandidateJob::PROGRESS_STATUS_IN_PROGRESS`.
+3. Delete the existing candidate-owned files of types
+   `File::TYPE_WORK_CONTRACT`, `File::TYPE_WORK_CONTRACT_SIGNATURE`,
+   `File::TYPE_MEDICAL_CONTRACT`, and
+   `File::TYPE_MEDICAL_CONTRACT_SIGNATURE`, preserving the existing
+   `backup=true` behavior used by `ArchiveCandidates::resetDocuments()`.
+
+The implementation must reuse the current reset behavior instead of copying
+the command's private helper into the controller. Because the command helper
+is private and its current calls are per job/file, the implementation phase
+must first choose a shared, batch-safe owner (CandidateService plus repository
+data access, or an approved existing workflow boundary), preserve the current
+file-safety checks, and avoid injecting one Service into another. Reads and
+affected file/job IDs must be preloaded before the write transaction; no DB
+query may be introduced inside a bulk loop. File/storage failures and partial
+reset outcomes must have an explicit error/rollback policy recorded before
+code is changed.
+
+### R7.3. Profile-deletion flow after removing Candidate soft-delete
+
+The deterministic link flow must remain usable even though archive no longer
+sets `candidates.deleted_at`:
+
+- `isAvailableForProfileDeletion()` must validate candidate ID, the
+  `StringUtility::uniqueHash(candidateId)` token, and the archived-job state;
+  it must not require `deleted_at != null`.
+- `isAlreadyArchivedCandidate()` and bulk validation must use the archived job
+  state rather than Candidate soft-delete state for no-op/deletion eligibility.
+- `sendCandidateArchiveEmail()` and `SendCandidateArchiveEmailJob` must accept
+  an active Candidate whose selected-branch job has been archived; they must
+  not silently return only because `deleted_at` is null.
+- `deleteArchivedProfile()` continues to reuse
+  `CandidateService::deleteCandidate()` for the synchronous CRS purge. The
+  purge remains the operation that physically removes the Candidate; archive
+  alone does not remove or hide the account.
+- Recheck whether the existing email/link wording still accurately describes
+  this state. Keep the seeded email content unchanged unless the user
+  explicitly approves a content change; update only runtime eligibility/link
+  data as required.
+
+### R7.4. API docs and execution gates
+
+The endpoint path, request fields, response fields, and error keys are
+unchanged unless implementation tracing proves otherwise. The side-effect
+contract does change: the archive endpoint must document that it archives job
+statuses and resets contract documents but does not soft-delete the Candidate.
+Therefore R7 requires a new docs-first amendment in
+`~/projects/crs-api-docs` before backend implementation:
+
+- update the bulk archive endpoint/flow documentation and any profile-deletion
+  wording affected by the active Candidate state;
+- mark the revised contract as planned/not deployed;
+- run documentation validation, commit only the task docs, push to
+  `origin/main`, and record the commit SHA in this plan;
+- start backend implementation only after that docs phase passes.
+
+Backend implementation must then update affected Feature/Service tests and
+run the targeted GAP-534 suite plus the full `./vendor/bin/phpunit` suite.
+Acceptance requires: Candidate `deleted_at` remains null after bulk archive;
+all eligible same-branch jobs follow the old archive rule; MatchMaker jobs are
+preserved; document status/progress/files follow the existing reset flow; the
+email job is dispatched only after commit; and the id/hash deletion flow can
+purge the still-active archived Candidate successfully.
+
+#### R7.4 execution evidence — docs-first gate (2026-10-19)
+
+- Updated docs in `~/projects/crs-api-docs`:
+  - `docs/api/consultant/post-candidates-bulk-archive.md`
+  - `docs/api/candidate/get-profile-deletion.md`
+  - `docs/api/candidate/post-profile-deletion.md`
+  - `docs/flows/candidate-lifecycle.md`
+- Revised contract is marked `PLANNED_NOT_DEPLOYED` and documents job-status
+  archive, document reset, active Candidate state and archived-job deletion
+  eligibility.
+- `git diff --check`: PASS.
+- `npm run build`: PASS.
+- Docs commit `b0d7b0c` (`docs(GAP-534): revise archive flow behavior`) pushed
+  successfully to `origin/main`.
+- **R7 docs-first gate: PASS.** Backend implementation may proceed.
+
+### R8. Purge implementation — repository-per-domain orchestration
+
+The profile-deletion purge must not use `CandidatePurgeRepository` anymore and
+must not replace it with `CandidateRepository::purgeCandidateData()`.
+`CandidateService::deleteCandidate()` remains the single orchestration point
+for the existing delete flow and all R8-required cleanup additions. Remove the
+temporary `purgeCandidateData()` contract/implementation from
+`CandidateRepository` and update all callers after an exact repository-wide
+usage audit. Do not leave a dead purge repository or create another aggregate
+purge method.
+
+The service must still respect the repository boundary: `deleteCandidate()`
+coordinates preload, storage cleanup, transaction order, repository call order
+and force-delete, but database reads/writes remain in the repository that owns
+each table/domain. Reuse the existing injected repositories and inherited
+`deleteByFilter()` only when it expresses the required operation clearly; for
+stable candidate cleanup conditions, prefer named methods such as
+`deleteByCandidateId()`. Add narrowly scoped methods to an existing repository,
+or create a missing table/domain repository only when no suitable owner exists.
+Do not put raw `DB::table()` cleanup queries in `CandidateService`. Move the
+current purge operations into their owning repositories, including:
+
+- preload of candidate file paths and SMS pre-campaign rows;
+- communication notes/change logs and escalated issue logs/issues;
+- candidate-job appointments, appointments, progress emails, timings and
+  candidate jobs;
+- files/snapshots/welfare checks, addresses, bank accounts, employment data,
+  answers, skills/tags, stars, face matching rates, declarations, legal-entity
+  switching requests and candidate tokens;
+- local `match_maker_duplication_processes`, tracking/activity rows, SMS
+  candidate rows/receivers, `sms_pre_campaigns` receiver ID updates and
+  candidate password-reset rows; and
+- the final Candidate force-delete.
+
+`match_maker_candidates` remains out of scope because the task is CRS-only and
+its logical email/people-number ownership is not safely resolvable here.
+`deleteCandidate()` must preserve the current storage-after-DB-commit failure
+handling, FK-safe deletion order, batch SMS update, include-trashed option and
+existing admin/compliance callers. Any cleanup that is not currently covered
+must be added to this method's workflow through the owning repository, not by
+copying raw `DB::table()` queries into the Service or a catch-all repository
+method. The implementation phase
+must update the deletion test matrix to prove no candidate-owned CRS rows or
+storage paths remain after successful purge and that a failed storage delete is
+logged without falsely rolling back the committed DB purge.
+
+#### R8.1. Repository ownership mapping and transaction order
+
+Before code changes, audit every table currently removed by the old aggregate
+method and map it to an owning repository. The service call order must be
+explicit and FK-safe: dependent logs/junctions first, candidate-owned domain
+rows next, candidate jobs/timings/files after their children, SMS pre-campaign
+JSON update, then final `forceDelete($candidate)`. Reads needed for storage
+paths, SMS pre-campaign rows and welfare-file references happen before the write
+transaction; the transaction contains only repository writes plus candidate
+force-delete.
+
+The mapping must explicitly cover the current CRS cleanup set: communication
+notes/logs, escalated issue logs/issues, candidate-job appointments,
+appointments, progress emails, timings/jobs, snapshots/welfare checks/files,
+declarations, addresses, bank accounts, employment history/references, answers,
+skills/tags, stars, face matching, legal-entity switching, candidate tokens,
+local MatchMaker duplication processes, tracking/activity logs, SMS candidate
+campaigns/receivers, SMS pre-campaign receiver-ID updates and candidate
+password resets. `match_maker_candidates` remains out of scope.
+
+Acceptance for this amendment: `CandidateRepositoryInterface` exposes no
+aggregate purge method; `CandidateService::deleteCandidate()` calls only
+table/domain repository contracts for database cleanup; no candidate cleanup
+query is added directly to the Service; transaction and post-commit storage
+behavior remain unchanged; existing admin/compliance delete callers and the
+profile-deletion flow still pass.
+
+#### R7 implementation evidence (2026-10-19)
+
+- Bulk archive now follows the existing job archive behavior: it updates
+  eligible same-branch candidate jobs to ARCHIVED, preserves MatchMaker jobs,
+  resets contract document status/progress, removes contract/medical files and
+  does not update candidates.deleted_at.
+- CandidateService::updateCandidateJobStatus() reuses the shared repository
+  archive operation for the single-candidate archive path. ArchiveCandidates
+  now calls CandidateService::resetCandidateJobDocuments() instead of keeping
+  a duplicate private reset workflow.
+- CandidatePurgeRepositoryInterface, CandidatePurgeRepository and its binding
+  were removed. R8 will remove the temporary aggregate
+  CandidateRepository::purgeCandidateData() method and move each cleanup
+  operation behind its owning repository contract, with CandidateService as the
+  orchestration point.
+- Profile-deletion eligibility now checks the deterministic ID/hash and an
+  archived candidate job; the Candidate may remain active until the synchronous
+  deleteCandidate() purge.
+- Updated Feature assertions in
+  tests/Feature/Api/Consultant/CandidateArchiveTest.php for active Candidate
+  state, job archive, document reset, file cleanup and profile purge.
+- Verification: targeted archive/job suites PASS (10 tests, 52 assertions);
+  PHP lint and git diff --check PASS; full PHPUnit PASS (631 tests, 9,360
+  assertions).
+- Living business specs updated:
+  .business-spec/backend-business-flow-spec.md,
+  .business-spec/backend-api-route-inventory.md,
+  .business-spec/backend-database-relationship.md.
+- R7 docs amendment in ~/projects/crs-api-docs passed git diff --check and
+  npm run build. Commit de56c49
+  (docs(GAP-534): mark archive flow code verified) was pushed successfully to
+  origin/main; follow-up branch-scope clarification commit 0dd5129 was also
+  pushed successfully to origin/main.
+- **R7 status: PASS for the previously approved implementation. R8 status:
+  PASS.** `CandidateRepository::purgeCandidateData()` was removed. `deleteCandidate()`
+  now preloads required read data and directly calls the owning repositories for
+  candidate-job children, candidate domain rows, tags, stars, local duplication,
+  tracking/activity and SMS cleanup before force-deleting the Candidate.
+- Added repository owners for candidate progress emails, candidate tags and
+  starred candidates; moved file-path lookup/file deletion to
+  `FileRepository`, SMS pre-campaign lookup/update to `SmsPreCampaignRepository`,
+  and candidate password-reset deletion to
+  `CandidatePasswordResetRepository`.
+- Targeted verification: `CandidateArchiveTest` PASS (6 tests, 39 assertions).
+- Full verification: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php
+  ./vendor/bin/phpunit` — PASS (631 tests, 9,360 assertions).
+- `git diff --check`: PASS; PHP lint passed for all changed/new PHP files.
+- Living business specs updated to record repository-per-domain purge ownership.
+- Backend code remains uncommitted; unrelated pre-existing worktree changes are
+  preserved.
+
+## R9. Revision — Remove withTrashed, Revert ArchiveCandidates Command & Batch Reset Documents Function (2026-10-19)
+
+### R9.1. Đánh giá và xác nhận về `withTrashed`
+- **Xác nhận**: Kể từ Revision 7 (R7), bulk archive quay về đúng hành vi archive gốc của hệ thống: chỉ cập nhật trạng thái `candidate_jobs.status = ARCHIVED` và reset contract documents; **HOÀN TOÀN KHÔNG soft-delete `candidates`**. Candidate vẫn ở trạng thái active bình thường (`candidates.deleted_at` luôn là `NULL`).
+- **Xử lý**:
+  1. Loại bỏ toàn bộ việc sử dụng `withTrashed()` trong flow bulk archive và profile deletion:
+     - `CandidateRepository::getCandidatesForBulkArchive()`: Bỏ `Candidate::withTrashed()`, chuyển về `Candidate::query()`.
+     - `CandidateRepositoryInterface` & `CandidateRepository`: Xóa bỏ phương thức `findWithTrashed(int $candidateId): ?Model`.
+     - `CandidateService`: Các method `canDeleteArchivedProfile`, `deleteArchivedProfile`, `sendCandidateArchiveEmail` chuyển sang dùng `find($candidateId)` thông thường.
+     - `CandidateServiceInterface` & `CandidateService`: Xóa bỏ tham số `bool $includeTrashed = false` trong `deleteCandidate(int $id)`, khôi phục đúng signature ban đầu `deleteCandidate(int $id): bool`.
+  2. Toàn bộ các mô tả/yêu cầu cũ trong Plan 534 về `include-trashed` hoặc query Candidate trashed được coi là obsolete và chính thức loại bỏ.
+
+### R9.2. Giữ nguyên Command `ArchiveCandidates` (Revert changes)
+- Command `app/Console/Commands/ArchiveCandidates.php` được revert về nguyên bản gốc (unmodified), không thay đổi bất kỳ dòng code hay injection nào:
+  - Giữ nguyên các service injection: `CandidateServiceInterface`, `CandidateRepositoryInterface`, `RegistrationProgressServiceInterface`, `FileServiceInterface`.
+  - Giữ nguyên method private `resetDocuments(Candidate $candidate, CandidateJob $candidateJob): void`.
+- Bảo toàn tuyệt đối git blame và tránh sửa đổi code ngoài phạm vi của task theo Workspace Rule §1.
+
+### R9.3. Viết function mới cho CandidateService để reset documents cho nhiều candidate/job cùng lúc (Batch Reset)
+- Thay vì gọi đơn lẻ hoặc viết inline toàn bộ trong `bulkArchive()`, tạo function mới chuyên trách trong `CandidateService`:
+  - Tên đề xuất: `resetCandidateJobsDocuments(Collection $candidateJobs): array` (hoặc `resetCandidateJobsDocumentsBatch`).
+  - Phạm vi chức năng:
+    1. Nhận vào collection các `CandidateJob` (đã được eager-load/filter thuộc scope cần archive).
+    2. Lọc các jobs có `contract_document_status` >= `CandidateJob::CONTRACT_DOCUMENT_STATUS_SIGNED_SERVICES_AND_TERMS_OF_ENGAGEMENT`.
+    3. Chuẩn bị dữ liệu cập nhật trạng thái:
+       - `contract_document_status = CONTRACT_DOCUMENT_STATUS_WATCHED_KEY_INFORMATION_DOCUMENT`
+       - `progresses['contracts'] = PROGRESS_STATUS_IN_PROGRESS`
+       - Trả về payload cấu trúc để thực hiện update batch (hoặc cập nhật trực tiếp trong transaction của bulkArchive).
+    4. Batch read files cần xóa cho toàn bộ candidate IDs liên quan:
+       - Types: `File::TYPE_WORK_CONTRACT`, `File::TYPE_WORK_CONTRACT_SIGNATURE`, `File::TYPE_MEDICAL_CONTRACT`, `File::TYPE_MEDICAL_CONTRACT_SIGNATURE` thông qua `FileRepository::getByCandidateIdsAndTypes()`.
+    5. Preload welfare check referenced file IDs bằng `CandidateWelfareCheckRepository::getReferencedFileIds()`.
+    6. Thực hiện xóa an toàn các files này thông qua helper xóa files hiện có (không xóa file đang được welfare check tham chiếu).
+  - Bỏ method đơn lẻ `resetCandidateJobDocuments(Candidate $candidate, CandidateJob $candidateJob)` khỏi `CandidateServiceInterface` và `CandidateService` (vì command đã tự giữ logic riêng, và bulk archive dùng hàm batch mới).
+
+### R9.4. File ownership và impact
+- `app/Console/Commands/ArchiveCandidates.php`: REVERT về HEAD (unmodified).
+- `app/Contracts/Repositories/CandidateRepositoryInterface.php`: Xóa `findWithTrashed`.
+- `app/Repositories/CandidateRepository.php`: Xóa `findWithTrashed`, bỏ `withTrashed()` trong `getCandidatesForBulkArchive`.
+- `app/Contracts/Services/CandidateServiceInterface.php`: Xóa `findWithTrashed` dependencies, bỏ `resetCandidateJobDocuments`, khôi phục `deleteCandidate(int $id): bool`, bổ sung signature cho batch reset documents (nếu public).
+- `app/Services/CandidateService.php`: Triển khai hàm batch reset mới, xóa hàm reset đơn lẻ `resetCandidateJobDocuments`, đổi các lookup trashed sang `find()`.
+- `tests/Feature/Api/Consultant/CandidateArchiveTest.php`: Cập nhật các test case để đảm bảo assertion kiểm tra candidate active và test bao phủ hàm batch reset mới.
+
+#### R9 implementation evidence (2026-10-19)
+
+- `app/Console/Commands/ArchiveCandidates.php` đã được revert 100% về nguyên bản gốc (unmodified), bảo toàn git blame và method private `resetDocuments()`.
+- Đã gỡ bỏ toàn bộ việc sử dụng `findWithTrashed()` và `withTrashed()` trong flow bulk archive và profile deletion:
+  - `CandidateRepository::getCandidatesForBulkArchive()` dùng `Candidate::query()`.
+  - Xóa `findWithTrashed()` khỏi `CandidateRepositoryInterface` và `CandidateRepository`.
+  - Khôi phục signature `CandidateService::deleteCandidate(int $id): bool`.
+  - `canDeleteArchivedProfile`, `deleteArchivedProfile`, `sendCandidateArchiveEmail` dùng `find($candidateId)`.
+- Triển khai method mới `CandidateService::resetCandidateJobsDocuments(Collection|SupportCollection|array $candidateJobs): void` để reset documents cho nhiều candidate jobs cùng lúc (batch-safe, pre-load files, không N+1).
+- `bulkArchive()` ủy quyền reset documents qua `resetCandidateJobsDocuments($archiveJobs)`.
+- Bổ sung Feature test `testResetCandidateJobsDocumentsBatchResetsEligibleJobsAndFiles` trong `CandidateArchiveTest`.
+- Verification:
+  - PHP lint: PASS trên toàn bộ file thay đổi.
+  - `git diff --check`: PASS.
+  - `CandidateArchiveTest`: PASS 7/7 tests (44 assertions).
+  - `CandidateServiceTest`: PASS 1/1 test.
+  - Full PHPUnit: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (632 tests, 9,365 assertions).
+- **R9 status: PASS.**
+
+## R10. Revision — Preload & Prepare Document Reset Data Before Archive Transaction (2026-10-19)
+
+### R10.1. Đánh giá và phân tích kiến trúc
+- **Hiện trạng tại R9**:
+  - `archiveBulkCandidatesAtomically` chạy Transaction 1 để đổi `candidate_jobs.status` sang `ARCHIVED` và gỡ star.
+  - `resetCandidateJobsDocuments` chạy sau đó với Transaction 2 để update `contract_document_status`, `progresses`, và `timings`.
+- **Hạn chế**:
+  - Nếu Transaction 1 thành công nhưng Transaction 2 gặp sự cố (disconnect, deadlock, crash), dữ liệu sẽ rơi vào trạng thái không đồng nhất: Candidate job đã bị chuyển sang `ARCHIVED` nhưng contract documents/progresses vẫn chưa được reset.
+- **Giải pháp theo góp ý của user**:
+  - Tách pha chuẩn bị dữ liệu (Pre-read / Prepare): trích xuất method `prepareCandidateJobDocumentResetData(Collection|SupportCollection|array $candidateJobs): array`. Method này chỉ đọc và format data, không ghi database.
+  - Đưa toàn bộ các thao tác ghi DB vào **MỘT TRANSACTION DUY NHẤT** trong `archiveBulkCandidatesAtomically`:
+    1. Archive candidate jobs theo branch (`archiveCandidateJobsByBranch`).
+    2. CAS update count check.
+    3. Update `contract_document_status` sang `WATCHED_KEY_INFORMATION_DOCUMENT`.
+    4. Upsert `progresses` (`contracts => IN_PROGRESS`).
+    5. Reset timings (`resetKidLinkViewed`).
+    6. Gỡ star cho acting user (`removeStarsForUserByCandidateIds`).
+  - Sau khi transaction commit thành công mới thực hiện xóa file vật lý bằng `deleteResetDocumentFiles()`.
+  - Giữ lại hàm `resetCandidateJobsDocuments()` công khai để phục vụ các caller độc lập khác (nếu cần reset document mà không archive job), hàm này sẽ tái sử dụng `prepareCandidateJobDocumentResetData()`.
+
+### R10.2. Thay đổi chi tiết trong `CandidateService.php`
+1. Thêm private helper `prepareCandidateJobDocumentResetData(Collection|SupportCollection|array $candidateJobs): array`:
+   - Lọc các jobs có `contract_document_status` >= `SIGNED_SERVICES_AND_TERMS_OF_ENGAGEMENT`.
+   - Chuẩn bị `$jobIds`, `$progresses`, `$timingKeys`.
+   - Batch query files và referenced file IDs.
+   - Trả về payload chuẩn: `['job_ids', 'progresses', 'timing_keys', 'files', 'referenced_file_ids']`.
+2. Cập nhật `archiveBulkCandidatesAtomically()`:
+   - Nhận thêm `$documentResetJobIds`, `$documentResetProgresses`, `$documentResetTimingKeys`.
+   - Thực thi tất cả trong 1 `DB::transaction(...)`.
+3. Cập nhật `bulkArchive()`:
+   - Gọi `prepareCandidateJobDocumentResetData($archiveJobs)`.
+   - Gọi `archiveBulkCandidatesAtomically(..., $resetData['job_ids'], $resetData['progresses'], $resetData['timing_keys'])`.
+   - Gọi `deleteResetDocumentFiles($resetData['files'], $resetData['referenced_file_ids'])`.
+   - Dispatch email sau commit.
+4. Cập nhật `resetCandidateJobsDocuments()`:
+   - Dùng `prepareCandidateJobDocumentResetData($candidateJobs)`.
+   - Chạy transaction reset document riêng cho các caller độc lập.
+   - Xóa file sau commit.
+
+#### R10 implementation evidence (2026-10-19)
+
+- Đã trích xuất private helper `prepareCandidateJobDocumentResetData(Collection|SupportCollection|array $candidateJobs): array` trong `CandidateService`:
+  - Thực hiện toàn bộ logic pre-read, filter và format dữ liệu reset document trước khi mở transaction.
+  - Pre-fetch danh sách file cần xóa và danh sách file ID được welfare check tham chiếu theo batch.
+- `archiveBulkCandidatesAtomically` nhận trực tiếp `$resetData['job_ids']`, `$resetData['progresses']`, `$resetData['timing_keys']` và gộp toàn bộ thao tác ghi database (archive jobs, CAS check, update contract document status, upsert progresses, reset timings, remove stars) vào **MỘT TRANSACTION DUY NHẤT**.
+- File vật lý được xóa an toàn sau khi transaction commit bằng `deleteResetDocumentFiles($resetData['files'], $resetData['referenced_file_ids'])`.
+- Method `resetCandidateJobsDocuments()` công khai tái sử dụng `prepareCandidateJobDocumentResetData()` cho các caller độc lập.
+- Verification:
+  - PHP lint: PASS trên toàn bộ file thay đổi.
+  - `git diff --check`: PASS.
+  - `CandidateArchiveTest`: PASS 7/7 tests (44 assertions).
+  - `CandidateServiceTest`: PASS 1/1 test.
+  - Full PHPUnit: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (632 tests, 9,365 assertions).
+- **R10 status: PASS.**
+
+## R11. Revision — Audit & Clean Up Unused Newly Added Functions (2026-10-19)
+
+### R11.1. Kết quả rà soát toàn bộ method thêm mới trong task
+Qua rà soát toàn bộ diff giữa nhánh task GAP-534 và nhánh gốc, phát hiện 2 functions được thêm mới nhưng không được gọi trong production code:
+
+1. **`resetCandidateJobsDocuments(Collection|SupportCollection|array $candidateJobs): void`**
+   - Vị trí: `app/Contracts/Services/CandidateServiceInterface.php` và `app/Services/CandidateService.php`.
+   - Lý do không sử dụng: Ở revision R10, flow `bulkArchive()` đã trực tiếp gọi `prepareCandidateJobDocumentResetData()` rồi truyền dữ liệu vào `archiveBulkCandidatesAtomically()` để thực thi trong 1 transaction duy nhất. Do đó, `resetCandidateJobsDocuments()` trở thành dead code, chỉ được gọi duy nhất trong test `testResetCandidateJobsDocumentsBatchResetsEligibleJobsAndFiles`.
+   - Hành động: Xóa bỏ khỏi interface và service, đồng thời xóa test case tương ứng trong `CandidateArchiveTest`.
+
+2. **`getByCandidateIdAndTypes(int $candidateId, array $types): Collection`**
+   - Vị trí: `app/Contracts/Repositories/FileRepositoryInterface.php` và `app/Repositories/FileRepository.php`.
+   - Lý do không sử dụng: Ban đầu được tạo cho reset document đơn lẻ của 1 candidate. Sau đó hệ thống đã chuyển sang dùng hàm batch `getByCandidateIdsAndTypes(array $candidateIds, array $types)`. Method này không còn được gọi ở bất cứ đâu trong cả `app/` và `tests/`.
+   - Hành động: Xóa bỏ khỏi interface và repository.
+
+Tất cả các method thêm mới còn lại (thuộc `CandidateRepository`, `CandidateJobRepository`, `CandidateTimingRepository`, `CandidateWelfareCheckRepository`, `FileRepository`, `SmsPreCampaignRepository`, `CandidateProgressEmailRepository`, `CandidateTagRepository`, `StarredCandidateRepository`, `CandidateService`, `CandidateController`, `MeController`) đều đang được gọi trực tiếp trong production call chain.
+
+### R11.2. Kế hoạch xóa bỏ
+- Xóa `resetCandidateJobsDocuments()` khỏi `app/Contracts/Services/CandidateServiceInterface.php` và `app/Services/CandidateService.php`.
+- Xóa `getByCandidateIdAndTypes()` khỏi `app/Contracts/Repositories/FileRepositoryInterface.php` và `app/Repositories/FileRepository.php`.
+- Xóa `testResetCandidateJobsDocumentsBatchResetsEligibleJobsAndFiles()` trong `tests/Feature/Api/Consultant/CandidateArchiveTest.php`.
+- Chạy PHP lint, test `CandidateArchiveTest` và full test suite `./vendor/bin/phpunit`.
+
+#### R11 implementation evidence (2026-10-19)
+
+- Đã xóa hoàn toàn 2 method không sử dụng:
+  1. `resetCandidateJobsDocuments()` trong `app/Contracts/Services/CandidateServiceInterface.php` và `app/Services/CandidateService.php`.
+  2. `getByCandidateIdAndTypes()` trong `app/Contracts/Repositories/FileRepositoryInterface.php` và `app/Repositories/FileRepository.php`.
+- Đã xóa test case `testResetCandidateJobsDocumentsBatchResetsEligibleJobsAndFiles` khỏi `tests/Feature/Api/Consultant/CandidateArchiveTest.php`.
+- Toàn bộ codebase sạch sẽ, không còn dead code từ các method mới thêm.
+- Verification:
+  - PHP syntax lint (`php -l`): PASS trên toàn bộ files.
+  - `git diff --check`: PASS (không có whitespace lỗi).
+  - Feature test: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit tests/Feature/Api/Consultant/CandidateArchiveTest.php` — PASS (6 tests, 39 assertions).
+  - Service unit test: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit tests/Unit/Services/CandidateServiceTest.php` — PASS (1 test, 1 assertion).
+  - Full PHPUnit: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (631 tests, 9,360 assertions).
+- **R11 status: PASS.**
+
+## R12. Revision — Switch Archive Email Token to `randomHash` with 7-Day Cache Expiration (2026-10-19)
+
+### R12.1. Yêu cầu & Bối cảnh
+Theo yêu cầu người dùng:
+> "chôx sinh token để gán vào link gửi email archive thay vì dùng hash thì chuyênr sang dùng randomHash và set vào cache để exp 7 ngày, sau check thì lấy từ cache ra để kiểm tra"
+
+#### Hiện trạng:
+- Token gửi trong archive email link hiện tại sinh qua `StringUtility::uniqueHash($candidateId)` (SHA-256 xác định, không expire, không lưu cache/DB).
+- `MeController::previewProfileDeletion` và `confirmProfileDeletion` gọi `CandidateService::isAvailableForProfileDeletion`, so sánh token gửi lên với `StringUtility::uniqueHash($candidateId)`.
+- `ProfileDeletionRequest` validate `token` theo regex `/^[a-f0-9]{64}$/`.
+- Docs tại `~/projects/crs-api-docs` ghi chú token là deterministic hash (`StringUtility::uniqueHash(id)`), độ dài 64 hex, không expire.
+
+#### Thiết kế mới:
+1. **Sinh token ngẫu nhiên**: Dùng `StringUtility::randomHash()` (32 ký tự hex: `bin2hex(random_bytes(16))`).
+2. **Lưu trữ Cache**:
+   - Cache key: `candidate_archive_profile_deletion_token:{candidate_id}`
+   - TTL: 7 ngày (604,800 giây = `7 * 24 * 60 * 60`).
+   - Constant:
+     - `CandidateService::ARCHIVE_PROFILE_DELETION_TOKEN_CACHE_KEY_PREFIX = 'candidate_archive_profile_deletion_token:'`
+     - `CandidateService::ARCHIVE_PROFILE_DELETION_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60`
+3. **Kiểm tra Token**:
+   - Khi client gọi `GET /api/candidate/profile_deletion?id={id}&token={token}` hoặc `POST /api/candidate/profile_deletion`:
+   - Lấy token từ cache: `Cache::get(self::ARCHIVE_PROFILE_DELETION_TOKEN_CACHE_KEY_PREFIX . $candidateId)`.
+   - Nếu cache miss (hết hạn 7 ngày hoặc chưa từng gửi), hoặc token không khớp: coi như token không hợp lệ (`can_delete: false` ở preview, HTTP 403 `profileDeletionTokenInvalid` ở confirm).
+   - Kiểm tra an toàn `hash_equals($cachedToken, $token)`.
+4. **Vô hiệu hóa Token sau khi xóa**:
+   - Sau khi `deleteCandidate($candidateId)` thành công trong `deleteArchivedProfile`, gọi `Cache::forget(self::ARCHIVE_PROFILE_DELETION_TOKEN_CACHE_KEY_PREFIX . $candidateId)` để token không thể replay trong thời hạn 7 ngày.
+5. **Cập nhật Request Validation**:
+   - Trong `ProfileDeletionRequest`: Đổi regex sang `/^[a-f0-9]{32,64}$/` để chấp nhận token 32 hex từ `randomHash()`.
+6. **API Contract / Docs Assessment**:
+   - `N/A — no API contract/API docs change`: Endpoint paths (`GET|POST /api/candidate/profile_deletion`), request shape (`id`, `token`), and response shapes (`can_delete`, `deleted`) remain identical for API clients. Token generation and cache TTL are internal backend implementation details. User approved proceeding with backend-only implementation.
+
+### R12.2. Kế hoạch thực hiện (Backend Implementation & Verification)
+
+1. Cập nhật `app/Services/CandidateService.php`:
+   - Khai báo constants:
+     - `public const ARCHIVE_PROFILE_DELETION_TOKEN_CACHE_KEY_PREFIX = 'candidate_archive_profile_deletion_token:';`
+     - `public const ARCHIVE_PROFILE_DELETION_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 604,800 seconds (7 days)`
+   - Sửa `sendCandidateArchiveEmail()`:
+     - Dùng `StringUtility::randomHash()`.
+     - Lưu token vào cache: `Cache::put(self::ARCHIVE_PROFILE_DELETION_TOKEN_CACHE_KEY_PREFIX . $candidateId, $token, self::ARCHIVE_PROFILE_DELETION_TOKEN_TTL_SECONDS);`.
+   - Sửa `isAvailableForProfileDeletion()`:
+     - Lấy `$cachedToken = Cache::get(self::ARCHIVE_PROFILE_DELETION_TOKEN_CACHE_KEY_PREFIX . $candidateId);`.
+     - Kiểm tra: `!empty($cachedToken) && is_string($cachedToken) && hash_equals($cachedToken, $token)`.
+   - Sửa `deleteArchivedProfile()`:
+     - Gọi `Cache::forget(self::ARCHIVE_PROFILE_DELETION_TOKEN_CACHE_KEY_PREFIX . $candidateId);` sau khi xóa profile thành công.
+2. Cập nhật `app/Http/Requests/Api/Candidate/ProfileDeletionRequest.php`:
+   - Đổi regex token sang `/^[a-f0-9]{32,64}$/`.
+3. Cập nhật Test Suite:
+   - `tests/Feature/Api/Consultant/CandidateArchiveTest.php`:
+     - Cập nhật test email archive để kiểm tra token ngẫu nhiên được sinh và lưu vào cache đúng TTL.
+     - Cập nhật test preview & confirm profile deletion: set token vào cache trước khi gọi endpoint.
+     - Bổ sung test case cho token hết hạn 7 ngày (cache miss) -> trả về `can_delete: false` và 403.
+     - Bổ sung test case token bị xóa khỏi cache sau khi confirm deletion thành công.
+4. Chạy kiểm tra:
+   - `php -l` cú pháp PHP.
+   - `git diff --check`.
+   - `./vendor/bin/phpunit tests/Feature/Api/Consultant/CandidateArchiveTest.php`.
+   - `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` toàn bộ test suite.
+
+#### R12 implementation evidence (2026-10-19)
+
+- Đã khai báo constants trong `CandidateService`:
+  - `public const ARCHIVE_PROFILE_DELETION_TOKEN_CACHE_KEY_PREFIX = 'candidate_archive_profile_deletion_token:';`
+  - `public const ARCHIVE_PROFILE_DELETION_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 604,800 seconds (7 days)`
+- Trong `sendCandidateArchiveEmail()`:
+  - Sinh token ngẫu nhiên bằng `StringUtility::randomHash()`.
+  - Lưu vào Cache với prefix và TTL 7 ngày (`Cache::put(...)`).
+- Trong `isAvailableForProfileDeletion()`:
+  - Lấy token từ cache: `Cache::get(...)`.
+  - Xác thực token hợp lệ bằng `hash_equals($cachedToken, $token)`. Trả về `false` nếu cache miss hoặc token không khớp.
+- Trong `deleteArchivedProfile()`:
+  - Sau khi xóa candidate thành công (`deleteCandidate`), gọi `Cache::forget(...)` để vô hiệu hóa token ngay lập tức, ngăn ngừa link replay.
+- Trong `ProfileDeletionRequest`:
+  - Mở rộng regex token: `regex:/^[a-f0-9]{32,64}$/` tương thích token 32-char hex của `randomHash()`.
+- Cập nhật test suite trong `CandidateArchiveTest.php`:
+  - `testBulkArchiveSendsArchiveEmailWithProfileDeletionLink`: kiểm tra token trong email link khớp với token được lưu vào cache và có độ dài 32 ký tự.
+  - `testProfileDeletionUsesCandidateIdAndCachedRandomTokenAndReusesDeleteCandidate`: kiểm tra preview và confirm xóa thành công, verify cache key bị xóa sau khi xóa profile.
+  - `testProfileDeletionRejectsUncachedOrInvalidToken`: kiểm tra token chưa cache hoặc không khớp bị từ chối.
+  - `testProfileDeletionRejectsExpiredToken`: kiểm tra token hết hạn sau 7 ngày (cache miss) bị từ chối với preview `false` và POST HTTP 403.
+- Verification:
+  - PHP syntax lint (`php -l`): PASS trên toàn bộ files.
+  - `git diff --check`: PASS.
+  - Feature test: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit tests/Feature/Api/Consultant/CandidateArchiveTest.php` — PASS (7 tests, 43 assertions).
+  - Full PHPUnit: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (632 tests, 9,364 assertions).
+- **R12 status: PASS.**
+
+## R13. Revision — Duplicate Query Removal & Performance Optimization (2026-10-19)
+
+### R13.1. Yêu cầu & Mục tiêu
+Dựa trên kết quả rà soát code toàn bộ nhánh `GAP-534`, tối ưu hóa 4 điểm trùng lặp query và hiệu năng:
+
+1. **Bỏ câu query `updateContractDocumentStatusByIds` trùng lặp**:
+   - `archiveBulkCandidatesAtomically()` trong `CandidateService` hiện đang gọi `updateContractDocumentStatusByIds` ngay trước `upsertProgresses()`.
+   - `upsertProgresses()` trong `CandidateJobRepository` đã cập nhật cả 3 cột `['contract_document_status', 'progresses', 'updated_at']` với cùng giá trị status `WATCHED_KEY_INFORMATION_DOCUMENT`.
+   - Câu lệnh `updateContractDocumentStatusByIds` tạo thêm 1 query UPDATE không cần thiết trên cùng danh sách job IDs.
+   - Hành động: Bỏ lời gọi `updateContractDocumentStatusByIds()` và xóa method này khỏi `CandidateJobRepositoryInterface` / `CandidateJobRepository`.
+
+2. **Bỏ eager load `with('job.branch')` trong `getCandidatesForBulkArchive`**:
+   - Trong `CandidateRepository::getCandidatesForBulkArchive()`, query đang load thêm `->with('job.branch')` cho relation `candidateJobs`.
+   - Toàn bộ flow `bulkArchive()` chỉ đọc các thuộc tính của `CandidateJob` (`id`, `status`, `contract_document_status`, `progresses`, `candidate_id`, `job_id`). Không hề truy cập `$candidateJob->job` hay `$candidateJob->job->branch` (do `branchId` đã có sẵn từ controller/request).
+   - Hành động: Bỏ `->with('job.branch')` trong eager load của `getCandidatesForBulkArchive()`, tiết kiệm 2 câu truy vấn SQL (`SELECT * FROM jobs` và `SELECT * FROM branches`).
+
+3. **Gộp vòng lặp & rút gọn cấu trúc dữ liệu Reset Document**:
+   - `prepareCandidateJobDocumentResetData()` đang duyệt `$documentResetJobs` 3 lần để sinh ra `$documentResetJobIds`, `$documentResetProgresses`, và `$documentResetTimingKeys`.
+   - Rút gọn: Duyệt 1 vòng lặp duy nhất để chuẩn bị `$documentResetProgresses` và `$documentResetTimingKeys`. Không cần mảng `$documentResetJobIds` riêng biệt vì `!empty($documentResetProgresses)` đã đại diện đầy đủ.
+   - Cập nhật signature `archiveBulkCandidatesAtomically()` loại bỏ tham số `$documentResetJobIds`.
+
+4. **Bỏ bọc `collect(...)` dư thừa trong `deleteCandidate`**:
+   - Trong `CandidateService::deleteCandidate()`: Các hàm `getByFilter()` của repository vốn đã trả về Eloquent `Collection`. Xóa các lời gọi `collect(...)` bao ngoài.
+
+5. **API Contract / Docs Assessment**:
+   - `N/A — no API contract/API docs change`: Tất cả các thay đổi trên hoàn toàn là refactoring và tối ưu hóa query nội bộ của Backend, không thay đổi bất kỳ route, request hay response nào của API.
+
+### R13.2. Kế hoạch thực hiện chi tiết
+
+1. **`app/Contracts/Repositories/CandidateJobRepositoryInterface.php` & `app/Repositories/CandidateJobRepository.php`**:
+   - Xóa method `updateContractDocumentStatusByIds(array $candidateJobIds, string $status, Carbon $updatedAt): int`.
+
+2. **`app/Repositories/CandidateRepository.php`**:
+   - Trong `getCandidatesForBulkArchive()`: Bỏ `->with('job.branch')`, chỉ giữ `whereHas('job', ...)`.
+
+3. **`app/Services/CandidateService.php`**:
+   - Trong `prepareCandidateJobDocumentResetData()`: Gộp việc duyệt `$documentResetJobs` thành 1 vòng lặp, trả về payload gồm: `progresses`, `timing_keys`, `files`, `referenced_file_ids`.
+   - Trong `archiveBulkCandidatesAtomically()`:
+     - Bỏ tham số `$documentResetJobIds`.
+     - Bỏ dòng `$this->candidateJobRepository->updateContractDocumentStatusByIds(...)`.
+     - Điều kiện chạy reset: `if ([] !== $documentResetProgresses)`.
+   - Trong `bulkArchive()`: Truyền `$resetData['progresses']` và `$resetData['timing_keys']`.
+   - Trong `deleteCandidate()`: Bỏ các wrapper `collect(...)` dư thừa quanh `getByFilter()`.
+
+4. **Kiểm tra & Xác minh**:
+   - `php -l` toàn bộ file thay đổi.
+   - `git diff --check`.
+   - Chạy Feature test: `tests/Feature/Api/Consultant/CandidateArchiveTest.php`.
+   - Chạy full PHPUnit test suite: `./vendor/bin/phpunit` đảm bảo 100% 632 test cases PASS.
+
+#### R13 implementation evidence (2026-10-19)
+
+- Đã xóa method `updateContractDocumentStatusByIds` khỏi `CandidateJobRepositoryInterface` và `CandidateJobRepository`.
+- Đã bỏ câu query `updateContractDocumentStatusByIds` trong `archiveBulkCandidatesAtomically()`, loại bỏ hoàn toàn 1 câu UPDATE trùng lặp trước `upsertProgresses()`.
+- Đã loại bỏ `->with('job.branch')` trong `CandidateRepository::getCandidatesForBulkArchive()`, tiết kiệm 2 câu truy vấn SQL eager loading không cần thiết.
+- Đã refactor `prepareCandidateJobDocumentResetData()`: duyệt qua `$documentResetJobs` trong 1 vòng lặp duy nhất, loại bỏ tham số trung gian `$documentResetJobIds`.
+- Đã xóa các lời gọi `collect(...)` bao ngoài các method `getByFilter()` trong `deleteCandidate()`.
+- Verification:
+  - PHP syntax lint (`php -l`): PASS trên toàn bộ files.
+  - `git diff --check`: PASS.
+  - Feature test: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit tests/Feature/Api/Consultant/CandidateArchiveTest.php` — PASS (7 tests, 43 assertions).
+  - Full PHPUnit: `APP_CONFIG_CACHE=/private/tmp/gap-534-config-test.php ./vendor/bin/phpunit` — PASS (632 tests, 9,364 assertions).
+- **R13 status: PASS.**
+
+
+
+
+
+

@@ -672,6 +672,17 @@ object
   overview: object
     transport_type: string
     travel_radius: string
+  health_and_safety: object (Required by MatchMaker API model)
+    owns_safety_boots: object { own: boolean, size: string }
+    owns_hi_viz_vest: object { own: boolean, size: string }
+  shift_preference: object (Required by MatchMaker API model)
+    days: boolean, twilights: boolean, nights: boolean, continental: boolean,
+    weekends: boolean, rotating: boolean, noons: boolean
+  health_and_criminal: object (Required by MatchMaker API model)
+    any_health_issues: string, any_convictions: string, agree_to_check: boolean
+  agreements: object (Required by MatchMaker API model)
+    data_protection: boolean, opt_out: boolean, health_disability: boolean, dbs: boolean
+  references: array (Required by MatchMaker API model, empty array for Permanent)
 ~~~
 
 **Success response — HTTP 200**

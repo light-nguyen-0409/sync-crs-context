@@ -5,10 +5,17 @@
 > **Trạng thái**: `LIVING_SPEC`
 > **Ngày tạo**: 2026-09-22
 > **Flow mapping cập nhật**: 2026-09-30 — bổ sung SPEC-039 và đối chiếu lại route collection hiện tại.
-> **Số lượng**: 245 API route entries từ Laravel route collection (`route:list --json`, SQLite in-memory, `LOG_CHANNEL=single`).
+> **Số lượng**: 248 API route entries từ Laravel route collection (`route:list --json`, SQLite in-memory, `LOG_CHANNEL=single`).
 > **Mục đích**: Danh sách route cụ thể để AI/BA/QA tra cứu endpoint, controller action, middleware và flow spec liên quan.
 
 ## 1. Cách đọc
+
+GAP-534 contract (2026-10-19): profile-deletion GET receives id and token
+query parameters; POST receives id and token JSON fields. The token must equal
+StringUtility::uniqueHash(id). Bulk archive keeps the existing route, updates
+eligible job statuses using the existing archive flow, resets eligible contract
+documents and does not soft-delete the Candidate. This contract is verified in
+the working tree but deployment is not verified.
 
 - URI đã là full API URI sau khi Laravel resolve prefix, bắt đầu bằng `/api`.
 - `GET|HEAD` là cách Laravel biểu diễn một route GET có thêm HEAD.
@@ -33,6 +40,7 @@ GAP-734 contract update (local implementation, deployment UNVERIFIED): GET /api/
 | POST | `/api/addresses/detail` | `App\Http\Controllers\Api\General\AddressSearchController@get` | api | SPEC-029 — Tracking/address | routes/general.php |
 | POST | `/api/addresses/drill_down` | `App\Http\Controllers\Api\General\AddressSearchController@drillDown` | api | SPEC-029 — Tracking/address | routes/general.php |
 | POST | `/api/addresses/search` | `App\Http\Controllers\Api\General\AddressSearchController@search` | api | SPEC-029 — Tracking/address | routes/general.php |
+| GET / HEAD | `/api/r/{token}` | `App\Http\Controllers\Api\General\PublicShortLinkController@redirect` | api | SPEC-040 — Rich-text email short-link redirect | routes/general.php |
 | GET / HEAD | `/api/admin/agencies` | `App\Http\Controllers\Api\Admin\AgencyController@list` | api, auth:userApi, detectAdmin | SPEC-037 — Staff/master data/catalogs | routes/admin.php |
 | POST | `/api/admin/agencies` | `App\Http\Controllers\Api\Admin\AgencyController@create` | api, auth:userApi, detectAdmin | SPEC-037 — Staff/master data/catalogs | routes/admin.php |
 | DELETE | `/api/admin/agencies/{id}` | `App\Http\Controllers\Api\Admin\AgencyController@delete` | api, auth:userApi, detectAdmin | SPEC-037 — Staff/master data/catalogs | routes/admin.php |

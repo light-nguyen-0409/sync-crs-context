@@ -4,11 +4,12 @@
 
 > **Trạng thái**: `LIVING_SPEC`
 > **Ngày tạo**: 2026-09-22
-> **Đối chiếu source gần nhất**: 2026-09-30 — working tree và test suite; chưa xác minh deployment/DB production.
+> **Đối chiếu source gần nhất**: 2026-10-19 — cập nhật GAP-534 archive/profile deletion contract; deployment/DB production chưa xác minh.
 > **Cập nhật phạm vi GAP-691**: 2026-10-05 — bỏ legacy Agreement URL, chuyển ba Blade vào `views/pdf`, gộp agreement generation vào PermanentCandidateIntakeService; giữ mapping Hawk3/GPHL/Tech theo working tree, deployment chưa xác minh.
 > **Cập nhật date GAP-691**: 2026-10-06 — agreement DTO dùng ngày generate d/m/Y theo app timezone; full regression chưa pass vì unrelated mapping/asset/MM-debug user edits so với fixtures cũ.
 > **Cập nhật GAP-723**: 2026-10-12 — public referee employment-reference PUT requires a body token matching the path reference ID before update/notification; no token expiry, revocation, single-use state, or database schema change.
-> **Cập nhật GAP-534**: 2026-10-12 — thêm bulk archive CRS và public profile-deletion token flow; implementation và test đã xác minh trên working tree, deployment/persistent DB chưa xác minh.
+> **Cập nhật GAP-534**: 2026-10-19 — bulk archive tái sử dụng archiveCandidateJobsByBranch; profile deletion nhận id + StringUtility::uniqueHash(id) và tái sử dụng CandidateService::deleteCandidate; purge được orchestration tại Service và gọi repository theo từng bảng/domain, không dùng aggregate purge repository/method; không còn archive-log table/token state; full PHPUnit đã pass trên working tree, deployment/persistent DB chưa xác minh.
+> **Cập nhật GAP-534 Finding 1**: 2026-10-14 — consultant branch authorization dùng `user_branches` membership; full PHPUnit đã xác minh trên working tree, deployment/persistent DB chưa xác minh.
 > **Author**: Codex
 > **Mục đích**: Nguồn tham chiếu để AI, BA, QA và developer đọc hiểu flow nghiệp vụ hiện tại và kiểm tra logic khi code thay đổi.
 
@@ -21,7 +22,7 @@ migration, command và scheduler.
 
 Phạm vi hiện tại:
 
-- 246 API route declarations trong source; runtime route collection resolve 245 API entries do một declaration compliance trùng method/URI bị trùng. Đếm bằng `route:list --json` với SQLite in-memory và `LOG_CHANNEL=single`.
+- 249 API route declarations trong source; runtime route collection resolve 248 API entries khi tính `GET|HEAD` là một route. Đếm bằng `route:list --json` với SQLite in-memory và `LOG_CHANNEL=single`.
 - 10 scheduler/cron command.
 - 1 queued job.
 - 4 event/listener chính.
@@ -159,7 +160,7 @@ request/phút. Các path dưới đây là path sau prefix `/api`.
 | Consultant integrations | `/consultant/candidates/{id}/match_maker`; `/*/application_pack`; `/*/worker_welfare_check`; `/consultant/sms/*` | MatchMaker transfer, pack, welfare and SMS | `routes/consultant.php` |
 | Compliance | `/compliance/candidates*`; `/compliance/branches*`; `/compliance/email_templates*`; `/compliance/escalated_issues*` | Compliance review, approve, branch/template/issue administration | `routes/compliance.php` |
 | Admin | `/admin/candidates*`; `/admin/branches*`; `/admin/users*`; `/admin/tags*`; `/admin/agencies*` | Admin reset/delete/unblock and master data | `routes/admin.php` |
-| General | `/tracking_records`; `/addresses/search`; `/addresses/detail`; `/addresses/drill_down` | Attribution tracking and address provider lookup | `routes/general.php` |
+| General | `/tracking_records`; `/addresses/search`; `/addresses/detail`; `/addresses/drill_down`; `/r/{token}` | Attribution tracking, address provider lookup and public rich-text email short-link redirect | `routes/general.php` |
 
 ### 4.2. Scheduler/cron
 
@@ -663,6 +664,18 @@ SOURCE        : path/class/method chứng minh
 - **POST-CONDITION**: Email dùng đúng template scope/version.
 - **SOURCE**: `app/Services/EmailTemplateService.php::resolveCustom/saveCustom/resolveTemplateForSending/resolveTemplateInstanceForSending`; Compliance `EmailTemplateController.php`.
 
+### SPEC-040 — Rich-text email short-link redirect (GAP-743)
+
+- **TRIGGER**: Bất kỳ flow gửi email dùng custom rich-text template (`EmailTemplate::isRichText = true`).
+- **ACTOR**: MailSender và email recipient.
+- **PRECONDITION**: Rich-text HTML đã được sanitize/inject placeholder; public `SHORT_LINK_BASE_URL` là HTTP(S) URL.
+- **STEPS**: `MailSenderAccessor` render rich-text qua `RichTextMailProcessor` → `ShortLinkService` scan clickable HTTP(S) anchor → batch persist token hash/destination vào `short_links` → rewrite anchor `href` và URL-only label → gửi email. Recipient GET `/api/r/{token}` → resolve token hash → validate destination → HTTP 302 tới URL gốc (redirect layer không tự đặt expiry; vòng đời do token đích quản lý).
+- **RULES**: Chỉ rich-text body được rewrite; legacy/plain-text email không đi qua short-link service. Không shorten `img src`, `mailto`, `tel`, non-HTTP(S) hoặc short link của chính backend. Human-readable label giữ nguyên; URL-only label đổi thành short URL. Destination không được nhận từ request redirect và chỉ lưu HTTP(S).
+- **FAILURE**: Batch mapping failure hoặc invalid short-link config giữ nguyên URL gốc và log structured non-PII error; token không tồn tại hoặc destination không hợp lệ trả HTTP 404.
+- **DB READ/WRITE**: `short_links` ghi batch; redirect đọc theo unique `token_hash`. Destination được mã hóa qua `ShortLink` cast; không có FK business hay cột expiry.
+- **SIDE EFFECT**: Email rich-text có URL ngắn và redirect public; không có analytics/expiry cleanup trong GAP-743.
+- **SOURCE**: `app/Facades/MailSenderAccessor.php`; `app/Services/Mail/RichTextMailProcessor.php`; `app/Services/ShortLinkService.php`; `app/Http/Controllers/Api/General/PublicShortLinkController.php`; `routes/general.php`.
+
 ### SPEC-029 — Tracking và address lookup
 
 - **TRIGGER**: Tracking endpoints và address search/detail/drill-down.
@@ -687,7 +700,7 @@ SOURCE        : path/class/method chứng minh
 
 ## 7. Known implementation notes và vùng cần verify
 
-- Route inventory đã được ghi nhận từ Laravel route collection với `DB_CONNECTION=sqlite` (240 entries); đây chỉ là route bootstrap, không chứng minh business queries tương thích SQLite hoặc PostgreSQL/production hoạt động.
+- Route inventory đã được ghi nhận từ Laravel route collection với `DB_CONNECTION=sqlite` (248 entries); đây chỉ là route bootstrap, không chứng minh business queries tương thích SQLite hoặc PostgreSQL/production hoạt động.
 - Compliance có hai declaration `GET /api/compliance/candidates/{id}/contact_logs`, runtime inventory chỉ có một entry; tra action/middleware thực tế thay vì đếm declarations.
 - `match_maker_candidates` là snapshot/cache liên kết với local candidate bằng email/`peo_no`, không phải lúc nào cũng có `candidate_id` FK; AI phải coi đây là logical mapping.
 - MatchMaker source được chọn từ branch legal entity; khi candidate đổi legal entity, phải verify `GAP`/`GAP_EAST` và `peo_no` tương ứng.
@@ -846,7 +859,7 @@ SOURCE        : path/class/method chứng minh
 | Guard/context | Hành vi từ source | Điều không được suy luận |
 |---|---|---|
 | detectAdmin | User có global ROLE_ADMIN | Không phải mọi auth:userApi đều là admin |
-| detectBranchForConsultant | Cần Gap-Branch-ID; allowToAccessTheBranch nhận global consultant role hoặc user_branch có branch+role | Middleware cấp branch context, không tự chứng minh candidate ở URL thuộc branch |
+| detectBranchForConsultant | Cần Gap-Branch-ID; consultant phải có `user_branches` row với branch+role `consultant`; ADMIN/COMPLIANCE giữ blanket access trong `allowToAccessTheBranch` | Middleware cấp branch context, không tự chứng minh candidate ở URL thuộc branch |
 | detectBranchForCompliance | Nếu getUserBranchesByRole(ADMIN) khác null: cấp tất cả branch IDs; nếu COMPLIANCE khác null: cấp IDs từ collection | Global compliance role trả empty collection ở service; hiệu quả filter branch_ids=[] cần trace consumer, không tự gán nghĩa all/none |
 | detectJobForCandidate | Không có application → lỗi; một job tự chọn khi thiếu header; nhiều jobs cần Gap-Job-ID; header phải thuộc candidate | Không áp dụng cho route không gắn middleware này; controller có thể tự yêu cầu header |
 | checkCandidateLockEdit | Bypass GET; non-GET bị chặn khi profile_locked hoặc highest job MATCHMAKER | Unlock profile không bỏ điều kiện MATCHMAKER; apply-job POST có ngoại lệ bỏ middleware |
@@ -971,27 +984,39 @@ GAP-691/012 (2026-10-09): The Service runtime DTO/context and direct `build → 
 GAP-691/015 (2026-10-09): Completion retry is now separated from the pre-sync terminal failure boundary without adding a submission-state table. The Job still exits for an already `is_permanent` candidate; otherwise it reads the existing Candidate MatchMaker marker (`match_maker_status=perm` plus `match_maker_people_number`). With no marker it generates/reuses the permanent PDF, performs the scalar MatchMaker sync, and calls completion in the same handle. If completion fails after the marker exists, the exception is allowed to reach the queue retry path; the next handle skips PDF/MM side effects and retries only `completePermanentCandidate`. Permanent intake submit applies the same marker guard and returns the existing conflict response while `is_permanent` is still false. Feature tests cover the real queued-job boundary and submit guard; full PHPUnit passes 614 tests / 9,303 assertions. No API contract, migration, or docs-repository change; external MatchMaker and production worker delivery remain unverified. See [plan015](../.specs/GAP-691/015-permanent-sync-completion-retry.md).
 ## GAP-534 — Bulk archive and CRS profile deletion
 
-`POST /api/consultant/candidates/bulk_archive` is protected by staff JWT and
-consultant branch middleware. `BulkArchiveRequest` accepts 1–100 distinct
-candidate IDs and a required `send_email` boolean. The Service batch-loads
-candidate/job state for the selected branch, rejects permanent/approved/
-MatchMaker/ineligible candidates, and atomically soft-deletes eligible
-Candidates, archives eligible branch jobs, removes only the acting user's
-stars, and inserts one `candidate_archive_logs` receipt per newly archived
-candidate. A retry of a matching archived cycle is a no-op. When
-`send_email=true`, a 32-byte Base64URL token is hashed with SHA-256 and the
-encrypted `SendCandidateArchiveEmailJob` is dispatched only after commit;
-the job uses the existing `candidate_archive` email template and does not
-create a purge job.
+POST /api/consultant/candidates/bulk_archive is protected by staff JWT and
+detectBranchForConsultant. The shared consultant branch-authorization rule is
+existing middleware behavior and is not changed by GAP-534. An unauthorized
+branch returns branchAccessNotAllowed and causes no candidate/job/star mutation
+or email-job dispatch. BulkArchiveRequest accepts 1–100 distinct candidate IDs
+and a required send_email boolean. The Service batch-loads candidate/job state
+for the selected branch, rejects permanent/approved/MatchMaker/ineligible
+candidates, and atomically updates eligible candidate jobs in the selected
+branch to ARCHIVED using the existing single-candidate archive rule
+(MatchMaker jobs are preserved). It resets eligible contract document status
+and contract progress, removes the existing contract/medical files, and
+removes only the acting user's stars. The Candidate row remains active; no
+Candidate soft-delete is performed. A retry of a matching archived
+candidate/job state is a no-op. When send_email=true, the encrypted
+SendCandidateArchiveEmailJob is dispatched only after commit with candidate ID
+and branch ID; the existing candidate_archive email template receives a link
+containing the candidate ID and StringUtility::uniqueHash(id). No
+archive-log table is written.
 
-`GET` and `POST /api/candidate/profile_deletion` are public token-scoped
-routes outside candidate JWT/edit-lock middleware. The token is accepted only
-from `X-Profile-Deletion-Token`. GET performs no mutation and returns only
-`can_delete`; POST claims the latest unused seven-day archive token, removes
-CRS-owned storage synchronously, then purges CRS candidate data in a
-writes-only database transaction and returns only `deleted=true` after commit.
-Tracking histories, activity logs, candidate-owned relationships and SMS
-pre-campaign candidate IDs are removed/updated; archive receipts remain with
-`candidate_id=NULL`, and only the consumed receipt is marked `deleted`.
+GET and POST /api/candidate/profile_deletion are public ID/hash-scoped routes
+outside candidate JWT/edit-lock middleware. GET receives id and token as query
+parameters and returns only can_delete; POST receives the same fields in JSON
+and returns only deleted=true after synchronous CRS cleanup. The Service
+verifies hash_equals(StringUtility::uniqueHash(id), token), requires an
+archived candidate job, and reuses CandidateService::deleteCandidate(id).
+Archive leaves the Candidate active; this flow performs
+the physical purge. Candidate-owned CRS data, tracking/activity records, local
+MatchMaker duplication process rows and SMS candidate relations are
+removed/updated in one database transaction orchestrated by
+CandidateService::deleteCandidate; each table/domain operation is delegated to
+its owning repository, and no aggregate purge method is used.
+Storage paths are preloaded and deleted only after commit; a storage failure is
+logged without rolling back the committed database purge. There is no expiry,
+one-time token state or archive receipt table.
 MatchMaker/provider records, external tracking, sent mail and backups are out
 of scope. Storage deletion cannot be rolled back by the database transaction.

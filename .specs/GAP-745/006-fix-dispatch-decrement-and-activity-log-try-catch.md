@@ -1,6 +1,6 @@
-# SPEC: GAP-745 — Fix Dispatch Decrement & ActivityLog Exception Handling
+# SPEC: GAP-745 — Fix Batch Collision (RunToken), Dispatch Decrement, and ActivityLog Exception Handling
 
-- **Date:** 2026-10-28
+- **Date:** 2026-10-29
 - **Task:** GAP-745 — Bulk SMS: Allow Email Communication Alongside SMS
 - **Status:** Draft (Pending User Approval)
 - **Related Specs:**
@@ -14,58 +14,66 @@
 
 ## 1. Analysis of Review Comments
 
-### Comment 1 `[Medium]` — Missing counter decrement on dispatch failure in `SmsService`
-- **Location:** [`app/Services/SmsService.php:533-540`](file:///Users/nexusfrontiertech/projects/gap-web-backend/app/Services/SmsService.php#L533-L540)
+### Issue 1 `[Medium]` — Batch collision on `pending_count` when campaign is resumed
+- **Location:** [`app/Jobs/SendSingleCampaignEmailJob.php`](file:///Users/nexusfrontiertech/projects/gap-web-backend/app/Jobs/SendSingleCampaignEmailJob.php) & [`app/Services/SmsService.php`](file:///Users/nexusfrontiertech/projects/gap-web-backend/app/Services/SmsService.php)
 - **Root Cause:**
-  Counter `pending_count` được khởi tạo bằng `$validCandidates->count()`. Khi loop dispatch `SendSingleCampaignEmailJob`, nếu lệnh `dispatch()` bị lỗi (do queue connection timeout hoặc driver error), block `catch (\Throwable $e)` chỉ ghi log mà không gọi `SendSingleCampaignEmailJob::decrementPending(...)`.
-- **Impact:**
-  Những candidate bị lỗi dispatch sẽ không bao giờ chạy, dẫn tới `pending_count` không bao giờ giảm về `0`, campaign bị kẹt vĩnh viễn ở trạng thái `email_sent_at = null` dù các candidate khác đã gửi thành công.
+  Khi `pending_count` chỉ được scope theo `campaign_id` (`sms_campaign:{$campaignId}:pending_count`), nếu một campaign được resume và gửi lại trong khi các job của đợt gửi trước vẫn đang trong hàng đợi hoặc đang retry (backoff lên tới 900s), đợt gửi mới sẽ ghi đè `Cache::put()`. Sau đó, các job đến muộn từ đợt cũ sẽ gọi `decrementPending()` làm giảm trừ nhầm bộ đếm của đợt mới, khiến `email_sent_at` bị đánh dấu sớm trước khi tất cả email đợt mới thực sự được gửi xong, hoặc bộ đếm bị âm/bất đồng bộ.
 - **Fix:**
-  Trong block `catch (\Throwable $e)` của `SmsService::dispatchCampaignEmails()`, gọi `SendSingleCampaignEmailJob::decrementPending($campaign->id, $this->smsCampaignRepository);`.
+  Đưa lại `$runToken` (sinh bằng `(string) Str::uuid()`) vào key `sms_campaign:{$campaignId}:{$runToken}:pending_count` và truyền vào `SendSingleCampaignEmailJob`. Các job đợt cũ chỉ tác động vào key của đợt cũ, hoàn toàn độc lập với đợt gửi mới.
 
 ---
 
-### Comment 2 `[Medium]` — Missing `try ... catch` around `ActivityLog::create` in `SendSingleCampaignEmailJob`
+### Issue 2 `[Medium]` — Missing counter decrement on dispatch failure in `SmsService`
+- **Location:** [`app/Services/SmsService.php:533-540`](file:///Users/nexusfrontiertech/projects/gap-web-backend/app/Services/SmsService.php#L533-L540)
+- **Root Cause:**
+  Khi `pending_count` được khởi tạo, nếu `SendSingleCampaignEmailJob::dispatch(...)` bị lỗi kết nối hàng đợi (Redis down/timeout ở môi trường Async), block `catch` chỉ log mà không decrement bù, khiến `pending_count` không bao giờ về `0` và `email_sent_at` bị kẹt mãi mãi.
+- **Fix:**
+  Trong block `catch (\Throwable $e)` của `dispatchCampaignEmails()`, kiểm tra `if (config('queue.default') !== 'sync')` để decrement bù khi lỗi xảy ra ở môi trường async (tránh trừ đúp khi ở môi trường sync).
+
+---
+
+### Issue 3 `[Medium]` — Missing `try ... catch` around `ActivityLog::create` in `SendSingleCampaignEmailJob`
 - **Location:** [`app/Jobs/SendSingleCampaignEmailJob.php:78-86`](file:///Users/nexusfrontiertech/projects/gap-web-backend/app/Jobs/SendSingleCampaignEmailJob.php#L78-L86)
 - **Root Cause:**
-  Sau khi `MailSender::sendCustomContent(...)` đã gửi email thành công cho ứng viên ở bước 1, nếu việc ghi `ActivityLog` ở bước 2 gặp lỗi DB (transient DB error / lock), exception không được bắt sẽ làm crash `handle()`. Queue worker sẽ retry job này (tối đa 3 lần). Ở mỗi lần retry, `MailSender::sendCustomContent(...)` lại được gọi tiếp, khiến ứng viên nhận email trùng lặp 2–3 lần. Đồng thời, `decrementPending` bị bỏ qua cho tới khi hết retry.
-- **Impact:**
-  Gửi trùng lặp marketing email cho ứng viên do lỗi phụ ở bước ghi log.
+  Sau khi gửi email thành công, nếu ghi `ActivityLog` bị lỗi DB, exception làm crash `handle()` và worker retry job. Ở các lần retry, email bị gửi lại cho cùng ứng viên (gửi lặp 2–3 lần).
 - **Fix:**
-  Bọc lời gọi `$activityLogRepository->create(...)` trong `try ... catch (\Throwable $e)` kèm `Log::error(...)` ghi đầy đủ context và `'message' => $e->getMessage()`.
+  Bọc lời gọi `$activityLogRepository->create(...)` trong `try ... catch (\Throwable $e)` kèm `Log::error(...)` ghi đầy đủ `'message' => $e->getMessage()`.
 
 ---
 
 ## 2. API Contract / API Docs Assessment
 
 - **Status:** `N/A — no API contract/API docs change`
-- **Reasoning:** Sửa lỗi xử lý ngoại lệ nội bộ trong Service và Queue Job, không ảnh hưởng route hay API contract.
 
 ---
 
 ## 3. Detailed Changes
 
-### 3.1. `app/Services/SmsService.php`
-- Cập nhật catch block trong `dispatchCampaignEmails`:
+### 3.1. `app/Jobs/SendSingleCampaignEmailJob.php`
+- Bổ sung `runToken` vào cache key & constructor:
   ```php
-  } catch (\Throwable $e) {
-      Log::error('SmsService: Failed to dispatch child email job', [
-          'campaign_id' => $campaign->id,
-          'candidate_id' => $candidate->id,
-          'exception' => $e::class,
-          'message' => $e->getMessage(),
-      ]);
-      SendSingleCampaignEmailJob::decrementPending(
-          $campaign->id,
-          $this->smsCampaignRepository
-      );
+  public const CACHE_KEY_PENDING_COUNT = 'sms_campaign:%d:%s:pending_count';
+
+  public function __construct(
+      public int $campaignId,
+      public string $runToken,
+      public int $candidateId,
+      public int $branchId,
+      public int $userId,
+      public array $from,
+      public array $to,
+      public string $title,
+      public string $content,
+      public ?array $preloadedBranchInfo = null
+  ) {}
+
+  public static function getPendingCountCacheKey(int $campaignId, string $runToken): string
+  {
+      return sprintf(self::CACHE_KEY_PENDING_COUNT, $campaignId, $runToken);
   }
   ```
-
-### 3.2. `app/Jobs/SendSingleCampaignEmailJob.php`
-- Bọc `$activityLogRepository->create(...)` trong `try-catch`:
+- Bọc `ActivityLog::create` trong `try ... catch (\Throwable $e)`:
   ```php
-  // 2. Record ActivityLog for this candidate (wrap in try-catch so failure does not re-trigger email send)
   $candidateEmail = (string) ($this->to['address'] ?? '');
   try {
       $activityLogRepository->create([
@@ -85,14 +93,38 @@
       ]);
   }
   ```
+- Cập nhật `decrementPending(int $campaignId, string $runToken, SmsCampaignRepositoryInterface $smsCampaignRepository)`.
+
+### 3.2. `app/Services/SmsService.php`
+- Trong `dispatchCampaignEmails()`:
+  - Sinh `$runToken = (string) Str::uuid();`.
+  - Khởi tạo `Cache::put(SendSingleCampaignEmailJob::getPendingCountCacheKey($campaign->id, $runToken), $validCandidates->count(), SendSingleCampaignEmailJob::CACHE_TTL_SECONDS);`.
+  - Dispatch job truyền `$runToken`.
+  - Trong block `catch (\Throwable $e)`:
+    ```php
+    } catch (\Throwable $e) {
+        Log::error('SmsService: Failed to dispatch child email job', [
+            'campaign_id' => $campaign->id,
+            'candidate_id' => $candidate->id,
+            'exception' => $e::class,
+            'message' => $e->getMessage(),
+        ]);
+
+        if (config('queue.default') !== 'sync') {
+            SendSingleCampaignEmailJob::decrementPending(
+                $campaign->id,
+                $runToken,
+                $this->smsCampaignRepository
+            );
+        }
+    }
+    ```
 
 ### 3.3. `tests/Feature/Api/Consultant/SmsCampaignTest.php`
-- Bổ sung test case kiểm chứng:
-  1. `testSendSingleCampaignEmailJobCatchesActivityLogExceptionWithoutFailingJob`: Verify rằng khi `$activityLogRepository->create` throw exception, exception được log lại, job không bị fail, `decrementPending` vẫn được gọi và `$campaign->email_sent_at` vẫn được cập nhật.
-  2. Test verify `dispatch` catch block gọi `decrementPending`.
+- Cập nhật các test case truyền `$runToken` vào `SendSingleCampaignEmailJob`.
+- Bổ sung test kiểm tra `ActivityLog` throw exception vẫn được bọc an toàn và hoàn tất job.
 
 ---
 
 ## 4. Verification Plan
 - Chạy: `./vendor/bin/phpunit tests/Feature/Api/Consultant/SmsCampaignTest.php`
-- Đảm bảo 100% tests pass.
